@@ -24,6 +24,77 @@ python app.py
 
 Or double-click `run.bat`.
 
+## Windows executable
+
+From this folder:
+
+```powershell
+python build_exe.py
+```
+
+That creates a single file: `dist\MKV to MP4.exe`. You can copy just that file. FFmpeg is packed inside it; Windows unpacks it to a temp folder when the app starts, so the first launch is a bit slower.
+
+## Stream Deck
+
+You can start and stop folder watching from an Elgato Stream Deck. The **MKV to MP4 app** and **Stream Deck software** must run on the **same Windows PC**.
+
+### What you need
+
+- Stream Deck software installed
+- This app running (`python app.py` or the `.exe`)
+- A watch folder already chosen in the app
+- The window should show **Stream Deck: :17321** (if it says **port busy**, close extra copies of the app)
+
+### Install the plugin (from source)
+
+In the project folder:
+
+```powershell
+python generate_streamdeck_icons.py
+python install_streamdeck_plugin.py
+```
+
+That copies the plugin to:
+
+`%APPDATA%\Elgato\StreamDeck\Plugins\com.wallacecandido.mkvtomp4.sdPlugin`
+
+Fully quit Stream Deck (system tray → **Quit**), then open it again.
+
+### Add keys
+
+1. In Stream Deck, open the action list.
+2. Find the **MKV to MP4** category.
+3. Drag **Toggle Watch** onto a key (optional: **Start Watch** and **Stop Watch**).
+
+The key shows **Idle** or **Watching**. If the desktop app is not running, it shows **App off**.
+
+### How to use it
+
+1. Open MKV to MP4 and pick your watch folder (and an MP4 output folder if the watch folder is read-only).
+2. Press **Toggle Watch** on the Stream Deck.
+3. Confirm the app log says `Stream Deck started watching.` and that **Start watching** is disabled.
+
+If the watch folder is not writable (common on a network share), the app saves MP4s under `Videos\MKV to MP4` instead and notes that in the log.
+
+### Another PC
+
+Copy the plugin pack (created by `install_streamdeck_plugin.py`):
+
+`dist\MKV-to-MP4.streamDeckPlugin`
+
+Double-click it on the other PC, restart Stream Deck, and run the MKV to MP4 app there. The Stream Deck must be attached to that same computer.
+
+### Troubleshooting
+
+| Key title | Meaning |
+| --- | --- |
+| App off | The desktop app is not running, or is not listening on port 17321 |
+| No folder | Choose a watch folder in the app first |
+| No FFmpeg | FFmpeg was not found (use the bundled `.exe` build, or install FFmpeg) |
+| No write | Windows could not create files in the watch folder or a local fallback |
+
+The app talks to the plugin at `http://127.0.0.1:17321`. Nothing is exposed on the network.
+
 ## Notes
 
 - The `.mp4` is written next to the `.mkv` with the same name.

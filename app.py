@@ -12,7 +12,9 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from icons import IconSet
 from remux import find_ffmpeg, output_path_for, remux_mkv_to_mp4
+from streamdeck_api import DEFAULT_PORT, StreamDeckApi
 
 POLL_SECONDS = 2.0
 STABLE_CHECKS = 2
@@ -38,7 +40,9 @@ def load_config() -> dict:
 
 def save_config(data: dict) -> None:
     APP_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    merged = load_config()
+    merged.update(data)
+    CONFIG_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
 
 
 def list_mkv_files(folder: Path, recursive: bool) -> list[Path]:
@@ -57,11 +61,8 @@ def format_size(num: int) -> str:
     return f"{num:.1f} TB"
 
 
-CHECKED = "☑"
-UNCHECKED = "☐"
-
-LIST_COLUMNS = ("picked", "name", "status", "size", "date")
-COLUMN_TITLES = {"picked": "", "name": "File", "status": "Status", "size": "Size", "date": "Date"}
+LIST_COLUMNS = ("name", "status", "size", "date")
+COLUMN_TITLES = {"name": "File", "status": "Status", "size": "Size", "date": "Date"}
 
 
 def display_name(path: Path, folder: Path | None) -> str:
@@ -111,7 +112,13 @@ class App(tk.Tk):
         self.geometry("1020x620")
 
         self.ffmpeg = find_ffmpeg()
-        self.watch_folder = tk.StringVar(value=load_config().get("watch_folder", ""))
+        cfg = load_config()
+        self.watch_folder = tk.StringVar(value=cfg.get("watch_folder", ""))
+        self.output_folder = tk.StringVar(value=cfg.get("output_folder", ""))
+        same = cfg.get("same_output", True)
+        if not str(cfg.get("output_folder", "")).strip():
+            same = True
+        self.same_output = tk.BooleanVar(value=same)
         self.recursive = tk.BooleanVar(value=False)
         self.watching = False
 
@@ -119,22 +126,52 @@ class App(tk.Tk):
         self.file_status: dict[str, str] = {}
         self.size_history: dict[str, list[int]] = {}
         self.queued: set[str] = set()
-        self.jobs: queue.Queue[tuple[str, Path]] = queue.Queue()
+        self.jobs: queue.Queue[tuple[str, Path, Path]] = queue.Queue()
         self.ui_events: queue.Queue[tuple] = queue.Queue()
+        self._api_jobs: queue.Queue[tuple] = queue.Queue()
         self.sort_column = "name"
         self.sort_reverse = False
         self.sort_keys: dict[str, dict[str, object]] = {}
         self.checked: set[str] = set()
+        self.deck_api = StreamDeckApi(self)
 
         self._build()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(200, self._drain_ui_events)
         self._refresh_ffmpeg_label()
+        self.deck_api.start()
+        if self.deck_api.running:
+            self.streamdeck_label.configure(text=f"Stream Deck: :{DEFAULT_PORT}")
+        else:
+            self.streamdeck_label.configure(text="Stream Deck: port busy")
 
         if self.watch_folder.get():
             self.refresh_file_list(initial=True)
 
     def _build(self) -> None:
+        self.icons = IconSet(self)
+        style = ttk.Style(self)
+        style.configure("Treeview", rowheight=30, indent=0)
+        style.configure("Treeview.Heading", padding=(8, 6))
+        try:
+            style.layout(
+                "Treeview.Item",
+                [
+                    (
+                        "Treeitem.padding",
+                        {
+                            "sticky": "nswe",
+                            "children": [
+                                ("Treeitem.image", {"side": "left", "sticky": ""}),
+                                ("Treeitem.text", {"side": "left", "sticky": ""}),
+                            ],
+                        },
+                    )
+                ],
+            )
+        except tk.TclError:
+            pass
+
         pad = {"padx": 12, "pady": 6}
 
         header = ttk.Frame(self)
@@ -145,6 +182,20 @@ class App(tk.Tk):
         row.pack(fill="x", pady=(4, 0))
         ttk.Entry(row, textvariable=self.watch_folder).pack(side="left", fill="x", expand=True)
         ttk.Button(row, text="Browse…", command=self.browse_folder).pack(side="left", padx=(8, 0))
+
+        ttk.Label(header, text="Save MP4s to").pack(anchor="w", pady=(8, 0))
+        out_row = ttk.Frame(header)
+        out_row.pack(fill="x", pady=(4, 0))
+        self.output_entry = ttk.Entry(out_row, textvariable=self.output_folder)
+        self.output_entry.pack(side="left", fill="x", expand=True)
+        self.output_browse = ttk.Button(out_row, text="Browse…", command=self.browse_output_folder)
+        self.output_browse.pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(
+            header,
+            text="Save next to the MKV (same folder)",
+            variable=self.same_output,
+            command=self._sync_output_controls,
+        ).pack(anchor="w", pady=(4, 0))
 
         controls = ttk.Frame(self)
         controls.pack(fill="x", **pad)
@@ -160,11 +211,14 @@ class App(tk.Tk):
         ).pack(side="left", padx=(16, 0))
         self.ffmpeg_label = ttk.Label(controls, text="")
         self.ffmpeg_label.pack(side="right")
+        self.streamdeck_label = ttk.Label(controls, text="")
+        self.streamdeck_label.pack(side="right", padx=(0, 16))
 
         hint = ttk.Label(
             self,
             text="Existing .mkv files are listed but never remuxed automatically. "
-            "Only files that appear after you start watching are remuxed on their own.",
+            "Only files that appear after you start watching are remuxed on their own. "
+            "If a shared folder is read-only, save MP4s to a local folder instead.",
             wraplength=860,
         )
         hint.pack(fill="x", padx=12)
@@ -176,20 +230,22 @@ class App(tk.Tk):
         self.tree = ttk.Treeview(
             tree_frame,
             columns=(*LIST_COLUMNS, "spacer"),
-            show="headings",
+            show="tree headings",
             selectmode="none",
         )
-        self.tree.column("#0", width=0, minwidth=0, stretch=False)
-        self.tree.column("picked", width=36, minwidth=36, stretch=False, anchor="center")
-        self.tree.column("name", width=280, minwidth=120, stretch=True)
-        self.tree.column("status", width=280, minwidth=160, stretch=False)
-        self.tree.column("size", width=90, minwidth=70, stretch=False, anchor="e")
-        self.tree.column("date", width=140, minwidth=120, stretch=False)
+        self.tree.column("#0", width=42, minwidth=42, stretch=False, anchor="center")
+        self.tree.column("name", width=280, minwidth=120, stretch=False)
+        self.tree.column("status", width=280, minwidth=80, stretch=False)
+        self.tree.column("size", width=90, minwidth=50, stretch=False, anchor="e")
+        self.tree.column("date", width=140, minwidth=80, stretch=False)
         self.tree.heading("spacer", text="")
         self.tree.column("spacer", width=0, minwidth=0, stretch=True)
         self.tree.tag_configure("checked", background="#e8f0fe")
         self._refresh_headings()
+        self._locked_name_width: int | None = None
         self.tree.bind("<Button-1>", self._on_tree_click)
+        self.tree.bind("<B1-Motion>", self._on_column_drag)
+        self.tree.bind("<ButtonRelease-1>", self._on_column_drag_end)
         yscroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         xscroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
@@ -216,27 +272,94 @@ class App(tk.Tk):
         self.log.pack(fill="x", padx=12, pady=(0, 12))
 
         threading.Thread(target=self._worker_loop, daemon=True).start()
+        self._sync_output_controls()
+
+    def persist_settings(self) -> None:
+        save_config(
+            {
+                "watch_folder": self.watch_folder.get().strip(),
+                "output_folder": self.output_folder.get().strip(),
+                "same_output": self.same_output.get(),
+            }
+        )
+
+    def _sync_output_controls(self) -> None:
+        state = "disabled" if self.same_output.get() else "normal"
+        self.output_entry.configure(state=state)
+        self.output_browse.configure(state=state)
+        self.persist_settings()
+
+    def output_dir_path(self) -> Path | None:
+        if self.same_output.get():
+            return self.folder_path()
+        raw = self.output_folder.get().strip()
+        if not raw:
+            return self.folder_path()
+        return Path(raw)
+
+    def dest_for(self, mkv_path: Path) -> Path:
+        return output_path_for(mkv_path, self.output_dir_path(), self.folder_path())
+
+    def _can_write(self, folder: Path) -> bool:
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            probe = folder / ".mkv-to-mp4-write-test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+            return True
+        except OSError:
+            return False
+
+    def _writable_output_dir(self, watch_folder: Path) -> Path | None:
+        dest = self.output_dir_path() or watch_folder
+        if dest and self._can_write(dest):
+            return dest
+        for candidate in (
+            Path.home() / "Videos" / "MKV to MP4",
+            APP_DIR / "output",
+        ):
+            if self._can_write(candidate):
+                self.same_output.set(False)
+                self.output_folder.set(str(candidate))
+                self._sync_output_controls()
+                self.log_line(f"Cannot write to {dest}. Saving MP4s to {candidate}")
+                return candidate
+        return None
 
     def _refresh_headings(self) -> None:
         rows = self.tree.get_children("")
-        all_on = bool(rows) and all(iid in self.checked for iid in rows)
-        self.tree.heading(
-            "picked",
-            text=CHECKED if all_on else UNCHECKED,
-            command=self._toggle_select_all,
-        )
+        checked_rows = [iid for iid in rows if iid in self.checked]
+        if not rows or not checked_rows:
+            header_icon = self.icons.unchecked
+        elif len(checked_rows) == len(rows):
+            header_icon = self.icons.checked
+        else:
+            header_icon = self.icons.mixed
+        self.tree.heading("#0", text="", image=header_icon, command=self._toggle_select_all)
         for column in LIST_COLUMNS:
-            if column == "picked":
-                continue
-            title = COLUMN_TITLES[column]
             if column == self.sort_column:
-                title = f"{title} {'▼' if self.sort_reverse else '▲'}"
-            self.tree.heading(column, text=title, command=lambda c=column: self.sort_by(c))
+                mark = self.icons.sort_desc if self.sort_reverse else self.icons.sort_asc
+            else:
+                mark = self.icons.sort_none
+            self.tree.heading(
+                column,
+                text=COLUMN_TITLES[column],
+                image=mark,
+                command=lambda c=column: self.sort_by(c),
+            )
 
     def _on_tree_click(self, event: tk.Event) -> str | None:
         region = self.tree.identify_region(event.x, event.y)
+        if region == "separator":
+            column = self.tree.identify_column(event.x)
+            # #1 is File; dragging that edge should change File. Other edges should not.
+            if column in {"#2", "#3", "#4", "#5"}:
+                self._locked_name_width = int(self.tree.column("name", "width"))
+            else:
+                self._locked_name_width = None
+            return None
         if region == "heading":
-            if self.tree.identify_column(event.x) == "#1":
+            if self.tree.identify_column(event.x) == "#0":
                 self._toggle_select_all()
                 return "break"
             return None
@@ -245,6 +368,15 @@ class App(tk.Tk):
             return None
         self._toggle_check(row)
         return "break"
+
+    def _on_column_drag(self, _event: tk.Event) -> None:
+        if self._locked_name_width is not None:
+            self.tree.column("name", width=self._locked_name_width)
+
+    def _on_column_drag_end(self, _event: tk.Event) -> None:
+        if self._locked_name_width is not None:
+            self.tree.column("name", width=self._locked_name_width)
+        self._locked_name_width = None
 
     def _toggle_check(self, iid: str) -> None:
         self._set_checked(iid, iid not in self.checked)
@@ -268,10 +400,8 @@ class App(tk.Tk):
         else:
             self.checked.discard(iid)
         if self.tree.exists(iid):
-            values = list(self.tree.item(iid, "values"))
-            if values:
-                values[0] = CHECKED if on else UNCHECKED
-                self.tree.item(iid, values=values, tags=("checked",) if on else ())
+            icon = self.icons.checked if on else self.icons.unchecked
+            self.tree.item(iid, image=icon, tags=("checked",) if on else ())
             if iid in self.sort_keys:
                 self.sort_keys[iid]["picked"] = 1 if on else 0
         if refresh_heading:
@@ -301,14 +431,14 @@ class App(tk.Tk):
         key = str(path)
         values, keys = file_row(path, self.folder_path(), status)
         picked = key in self.checked
-        display = (CHECKED if picked else UNCHECKED, *values)
         keys = {"picked": 1 if picked else 0, **keys}
         self.sort_keys[key] = keys
         tags = ("checked",) if picked else ()
+        icon = self.icons.checked if picked else self.icons.unchecked
         if self.tree.exists(key):
-            self.tree.item(key, values=display, tags=tags)
+            self.tree.item(key, values=values, image=icon, text="", tags=tags)
         else:
-            self.tree.insert("", "end", iid=key, values=display, tags=tags)
+            self.tree.insert("", "end", iid=key, values=values, image=icon, text="", tags=tags)
         if apply_sort:
             self._apply_sort()
 
@@ -336,10 +466,18 @@ class App(tk.Tk):
         if not chosen:
             return
         self.watch_folder.set(chosen)
-        save_config({"watch_folder": chosen})
+        self.persist_settings()
         if self.watching:
             self.stop_watching()
         self.refresh_file_list(initial=True)
+
+    def browse_output_folder(self) -> None:
+        initial = self.output_folder.get() or self.watch_folder.get() or str(Path.home())
+        chosen = filedialog.askdirectory(title="Choose a folder for MP4 files", initialdir=initial)
+        if not chosen:
+            return
+        self.output_folder.set(chosen)
+        self.persist_settings()
 
     def on_recursive_toggle(self) -> None:
         if self.watching:
@@ -365,28 +503,75 @@ class App(tk.Tk):
             elif key not in self.file_status:
                 self.file_status[key] = STATUS_DETECTED if self.watching else STATUS_EXISTING
             status = self.file_status.get(key, STATUS_EXISTING)
-            if status == STATUS_EXISTING and output_path_for(path).is_file():
+            if status == STATUS_EXISTING and self.dest_for(path).is_file():
                 status = f"{STATUS_EXISTING} · {STATUS_SKIPPED}"
             self._put_row(path, status, apply_sort=False)
         self._apply_sort()
         self._refresh_headings()
 
-    def start_watching(self) -> None:
+    def call_on_ui(self, fn) -> str | None:  # noqa: ANN001
+        box: dict[str, str | None] = {}
+        done = threading.Event()
+        self._api_jobs.put((fn, box, done))
+        if not done.wait(20):
+            return "The app did not respond."
+        return box.get("error")
+
+    def stream_deck_status(self) -> dict:
+        return {
+            "ok": True,
+            "watching": self.watching,
+            "folder": self.watch_folder.get().strip(),
+        }
+
+    def api_start_watching(self) -> str | None:
+        error = self.start_watching(interactive=False)
+        if error:
+            self.log_line(f"Stream Deck could not start watching: {error}")
+        else:
+            self.log_line("Stream Deck started watching.")
+        return error
+
+    def api_stop_watching(self) -> str | None:
+        if self.watching:
+            self.stop_watching()
+            self.log_line("Stream Deck stopped watching.")
+        return None
+
+    def api_toggle_watching(self) -> str | None:
+        if self.watching:
+            return self.api_stop_watching()
+        return self.api_start_watching()
+
+    def start_watching(self, interactive: bool = True) -> str | None:
+        if self.watching:
+            return None
         folder = self.folder_path()
         if not folder or not folder.is_dir():
-            messagebox.showerror("Folder needed", "Choose an existing folder to watch.")
-            return
+            msg = "Choose an existing folder to watch."
+            if interactive:
+                messagebox.showerror("Folder needed", msg)
+            return msg
         if not self.ffmpeg:
             self.ffmpeg = find_ffmpeg()
             self._refresh_ffmpeg_label()
         if not self.ffmpeg:
-            messagebox.showerror(
-                "FFmpeg not found",
-                "Install FFmpeg and make sure it is on your PATH, then try again.",
-            )
-            return
+            msg = "FFmpeg was not found."
+            if interactive:
+                messagebox.showerror(
+                    "FFmpeg not found",
+                    "Install FFmpeg and make sure it is on your PATH, then try again.",
+                )
+            return msg
 
-        save_config({"watch_folder": str(folder)})
+        out_dir = self._writable_output_dir(folder)
+        if out_dir is None:
+            msg = "Cannot write MP4s (share is read-only and no local folder worked)."
+            if interactive:
+                messagebox.showerror("Cannot write here", msg)
+            return msg
+
+        self.persist_settings()
         existing = list_mkv_files(folder, self.recursive.get())
         self.baseline = {str(p) for p in existing}
         self.file_status = {str(p): STATUS_EXISTING for p in existing}
@@ -397,21 +582,27 @@ class App(tk.Tk):
         self.stop_btn.configure(state="normal")
         self.refresh_file_list()
         self.log_line(f"Watching {folder}")
+        dest = self.output_dir_path()
+        if dest and dest != folder:
+            self.log_line(f"Saving MP4s to {dest}")
         self.log_line(
             f"Found {len(existing)} existing .mkv file(s). They will not be remuxed unless you select them."
         )
         threading.Thread(target=self._watch_loop, daemon=True).start()
+        return None
 
     def stop_watching(self) -> None:
+        if not self.watching:
+            return
         self.watching = False
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
         self.log_line("Stopped watching.")
 
     def open_folder(self) -> None:
-        folder = self.folder_path()
-        if folder and folder.is_dir():
-            os.startfile(folder)  # type: ignore[attr-defined]
+        target = self.output_dir_path() or self.folder_path()
+        if target and target.is_dir():
+            os.startfile(target)  # type: ignore[attr-defined]
         else:
             messagebox.showerror("Folder needed", "Choose a folder first.")
 
@@ -442,7 +633,7 @@ class App(tk.Tk):
         self.queued.add(key)
         self.file_status[key] = STATUS_REMUXING
         self._set_row_status(path, STATUS_REMUXING)
-        self.jobs.put((reason, path))
+        self.jobs.put((reason, path, self.dest_for(path)))
         self.log_line(f"Queued ({reason}): {path.name}")
 
     def _set_row_status(self, path: Path, status: str) -> None:
@@ -480,7 +671,7 @@ class App(tk.Tk):
                         self.file_status[key] = STATUS_DETECTED
                         self.ui_events.put(("upsert", path, STATUS_DETECTED))
                         continue
-                    if output_path_for(path).is_file():
+                    if self.dest_for(path).is_file():
                         self.file_status[key] = STATUS_SKIPPED
                         self.ui_events.put(("upsert", path, STATUS_SKIPPED))
                         self.ui_events.put(("log", f"Skipped (MP4 exists): {path.name}"))
@@ -490,16 +681,26 @@ class App(tk.Tk):
 
     def _worker_loop(self) -> None:
         while True:
-            reason, path = self.jobs.get()
+            reason, path, dest = self.jobs.get()
             try:
-                remux_mkv_to_mp4(path, self.ffmpeg)  # type: ignore[arg-type]
-                self.ui_events.put(("done", path, reason))
+                remux_mkv_to_mp4(path, self.ffmpeg, dest)
+                self.ui_events.put(("done", path, reason, dest))
             except Exception as exc:  # noqa: BLE001 — show any remux failure in the UI
                 self.ui_events.put(("failed", path, str(exc)))
             finally:
                 self.jobs.task_done()
 
     def _drain_ui_events(self) -> None:
+        while True:
+            try:
+                fn, box, done = self._api_jobs.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                box["error"] = fn()
+            except Exception as exc:  # noqa: BLE001
+                box["error"] = str(exc)
+            done.set()
         while True:
             try:
                 event = self.ui_events.get_nowait()
@@ -514,13 +715,12 @@ class App(tk.Tk):
             elif kind == "enqueue_auto":
                 self._enqueue(event[1], reason="new file")
             elif kind == "done":
-                path, reason = event[1], event[2]
+                path, reason, dest = event[1], event[2], event[3]
                 key = str(path)
                 self.queued.discard(key)
                 self.file_status[key] = STATUS_DONE
                 self._set_row_status(path, STATUS_DONE)
-                out = output_path_for(path)
-                self.log_line(f"Finished ({reason}): {out.name}")
+                self.log_line(f"Finished ({reason}): {dest}")
             elif kind == "failed":
                 path, err = event[1], event[2]
                 key = str(path)
@@ -532,9 +732,9 @@ class App(tk.Tk):
 
     def on_close(self) -> None:
         self.watching = False
-        folder = self.watch_folder.get().strip()
-        if folder:
-            save_config({"watch_folder": folder})
+        self.persist_settings()
+        if self.deck_api:
+            self.deck_api.stop()
         self.destroy()
 
 
