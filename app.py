@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from icons import IconSet
 from remux import find_ffmpeg, output_path_for, remux_mkv_to_mp4
 
 POLL_SECONDS = 2.0
@@ -57,11 +58,8 @@ def format_size(num: int) -> str:
     return f"{num:.1f} TB"
 
 
-CHECKED = "☑"
-UNCHECKED = "☐"
-
-LIST_COLUMNS = ("picked", "name", "status", "size", "date")
-COLUMN_TITLES = {"picked": "", "name": "File", "status": "Status", "size": "Size", "date": "Date"}
+LIST_COLUMNS = ("name", "status", "size", "date")
+COLUMN_TITLES = {"name": "File", "status": "Status", "size": "Size", "date": "Date"}
 
 
 def display_name(path: Path, folder: Path | None) -> str:
@@ -135,6 +133,29 @@ class App(tk.Tk):
             self.refresh_file_list(initial=True)
 
     def _build(self) -> None:
+        self.icons = IconSet(self)
+        style = ttk.Style(self)
+        style.configure("Treeview", rowheight=30, indent=0)
+        style.configure("Treeview.Heading", padding=(8, 6))
+        try:
+            style.layout(
+                "Treeview.Item",
+                [
+                    (
+                        "Treeitem.padding",
+                        {
+                            "sticky": "nswe",
+                            "children": [
+                                ("Treeitem.image", {"side": "left", "sticky": ""}),
+                                ("Treeitem.text", {"side": "left", "sticky": ""}),
+                            ],
+                        },
+                    )
+                ],
+            )
+        except tk.TclError:
+            pass
+
         pad = {"padx": 12, "pady": 6}
 
         header = ttk.Frame(self)
@@ -176,11 +197,10 @@ class App(tk.Tk):
         self.tree = ttk.Treeview(
             tree_frame,
             columns=(*LIST_COLUMNS, "spacer"),
-            show="headings",
+            show="tree headings",
             selectmode="none",
         )
-        self.tree.column("#0", width=0, minwidth=0, stretch=False)
-        self.tree.column("picked", width=36, minwidth=36, stretch=False, anchor="center")
+        self.tree.column("#0", width=42, minwidth=42, stretch=False, anchor="center")
         self.tree.column("name", width=280, minwidth=120, stretch=True)
         self.tree.column("status", width=280, minwidth=160, stretch=False)
         self.tree.column("size", width=90, minwidth=70, stretch=False, anchor="e")
@@ -219,24 +239,30 @@ class App(tk.Tk):
 
     def _refresh_headings(self) -> None:
         rows = self.tree.get_children("")
-        all_on = bool(rows) and all(iid in self.checked for iid in rows)
-        self.tree.heading(
-            "picked",
-            text=CHECKED if all_on else UNCHECKED,
-            command=self._toggle_select_all,
-        )
+        checked_rows = [iid for iid in rows if iid in self.checked]
+        if not rows or not checked_rows:
+            header_icon = self.icons.unchecked
+        elif len(checked_rows) == len(rows):
+            header_icon = self.icons.checked
+        else:
+            header_icon = self.icons.mixed
+        self.tree.heading("#0", text="", image=header_icon, command=self._toggle_select_all)
         for column in LIST_COLUMNS:
-            if column == "picked":
-                continue
-            title = COLUMN_TITLES[column]
             if column == self.sort_column:
-                title = f"{title} {'▼' if self.sort_reverse else '▲'}"
-            self.tree.heading(column, text=title, command=lambda c=column: self.sort_by(c))
+                mark = self.icons.sort_desc if self.sort_reverse else self.icons.sort_asc
+            else:
+                mark = self.icons.sort_none
+            self.tree.heading(
+                column,
+                text=COLUMN_TITLES[column],
+                image=mark,
+                command=lambda c=column: self.sort_by(c),
+            )
 
     def _on_tree_click(self, event: tk.Event) -> str | None:
         region = self.tree.identify_region(event.x, event.y)
         if region == "heading":
-            if self.tree.identify_column(event.x) == "#1":
+            if self.tree.identify_column(event.x) == "#0":
                 self._toggle_select_all()
                 return "break"
             return None
@@ -268,10 +294,8 @@ class App(tk.Tk):
         else:
             self.checked.discard(iid)
         if self.tree.exists(iid):
-            values = list(self.tree.item(iid, "values"))
-            if values:
-                values[0] = CHECKED if on else UNCHECKED
-                self.tree.item(iid, values=values, tags=("checked",) if on else ())
+            icon = self.icons.checked if on else self.icons.unchecked
+            self.tree.item(iid, image=icon, tags=("checked",) if on else ())
             if iid in self.sort_keys:
                 self.sort_keys[iid]["picked"] = 1 if on else 0
         if refresh_heading:
@@ -301,14 +325,14 @@ class App(tk.Tk):
         key = str(path)
         values, keys = file_row(path, self.folder_path(), status)
         picked = key in self.checked
-        display = (CHECKED if picked else UNCHECKED, *values)
         keys = {"picked": 1 if picked else 0, **keys}
         self.sort_keys[key] = keys
         tags = ("checked",) if picked else ()
+        icon = self.icons.checked if picked else self.icons.unchecked
         if self.tree.exists(key):
-            self.tree.item(key, values=display, tags=tags)
+            self.tree.item(key, values=values, image=icon, text="", tags=tags)
         else:
-            self.tree.insert("", "end", iid=key, values=display, tags=tags)
+            self.tree.insert("", "end", iid=key, values=values, image=icon, text="", tags=tags)
         if apply_sort:
             self._apply_sort()
 
