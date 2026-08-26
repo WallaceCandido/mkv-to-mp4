@@ -9,7 +9,7 @@ import zlib
 import tkinter as tk
 from pathlib import Path
 
-BLUE = (37, 99, 235, 255)
+BLUE = (168, 85, 247, 255)
 WHITE = (255, 255, 255, 255)
 BORDER = (148, 163, 184, 255)
 MUTED = (148, 163, 184, 220)

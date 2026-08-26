@@ -34,12 +34,12 @@ def main() -> None:
     if target.exists():
         shutil.rmtree(target)
     shutil.copytree(PLUGIN_DIR, target)
-    packed = ROOT / "dist" / "MKV-to-MP4.streamDeckPlugin"
+    packed = ROOT / "dist" / "Remuxr.streamDeckPlugin"
     pack_release(packed)
     print(f"Installed plugin to:\n  {target}")
-    print("Restart the Stream Deck app, then add MKV to MP4 actions from the action list.")
+    print("Restart the Stream Deck app, then add Remuxr actions from the action list.")
     print(f"Also packed:\n  {packed}")
-    print("The MKV to MP4 desktop app must be running on this computer.")
+    print("The Remuxr desktop app must be running on this computer.")
 
 
 if __name__ == "__main__":

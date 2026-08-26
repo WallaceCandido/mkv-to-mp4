@@ -1,4 +1,4 @@
-# mkv-to-mp4
+# Remuxr
 
 A simple desktop app that remuxes `.mkv` files to `.mp4` using FFmpeg.
 
@@ -34,11 +34,11 @@ From this folder:
 python build_exe.py
 ```
 
-That creates a single file: `dist\MKV to MP4.exe`. You can copy just that file. FFmpeg is packed inside it; Windows unpacks it to a temp folder when the app starts, so the first launch is a bit slower.
+That creates a single file: `dist\Remuxr.exe`. You can copy just that file. FFmpeg is packed inside it; Windows unpacks it to a temp folder when the app starts, so the first launch is a bit slower.
 
 ## Stream Deck
 
-You can start and stop folder watching from an Elgato Stream Deck. The **MKV to MP4 app** and **Stream Deck software** must run on the **same Windows PC**.
+You can start and stop folder watching from an Elgato Stream Deck. The **Remuxr app** and **Stream Deck software** must run on the **same Windows PC**.
 
 ### What you need
 
@@ -65,14 +65,14 @@ Fully quit Stream Deck (system tray → **Quit**), then open it again.
 ### Add keys
 
 1. In Stream Deck, open the action list.
-2. Find the **MKV to MP4** category.
+2. Find the **Remuxr** category.
 3. Drag **Toggle Watch** onto a key (optional: **Start Watch** and **Stop Watch**).
 
 The key shows **Idle** or **Watching**. If the desktop app is not running, it shows **App off**.
 
 ### How to use it
 
-1. Open MKV to MP4 and pick your watch folder (and an MP4 output folder if the watch folder is read-only).
+1. Open Remuxr and pick your watch folder (and an MP4 output folder if the watch folder is read-only).
 2. Press **Toggle Watch** on the Stream Deck.
 3. Confirm the app log says `Stream Deck started watching.` and that **Start watching** is disabled.
 
@@ -82,9 +82,9 @@ If the watch folder is not writable (common on a network share), the app saves M
 
 Copy the plugin pack (created by `install_streamdeck_plugin.py`):
 
-`dist\MKV-to-MP4.streamDeckPlugin`
+`dist\Remuxr.streamDeckPlugin`
 
-Double-click it on the other PC, restart Stream Deck, and run the MKV to MP4 app there. The Stream Deck must be attached to that same computer.
+Double-click it on the other PC, restart Stream Deck, and run Remuxr there. The Stream Deck must be attached to that same computer.
 
 ### Troubleshooting
 
