@@ -24,6 +24,16 @@ python app.py
 
 Or double-click `run.bat`.
 
+## Windows executable
+
+From this folder:
+
+```powershell
+python build_exe.py
+```
+
+That creates a single file: `dist\MKV to MP4.exe`. You can copy just that file. FFmpeg is packed inside it; Windows unpacks it to a temp folder when the app starts, so the first launch is a bit slower.
+
 ## Notes
 
 - The `.mp4` is written next to the `.mkv` with the same name.

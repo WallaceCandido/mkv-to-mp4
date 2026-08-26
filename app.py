@@ -201,15 +201,18 @@ class App(tk.Tk):
             selectmode="none",
         )
         self.tree.column("#0", width=42, minwidth=42, stretch=False, anchor="center")
-        self.tree.column("name", width=280, minwidth=120, stretch=True)
-        self.tree.column("status", width=280, minwidth=160, stretch=False)
-        self.tree.column("size", width=90, minwidth=70, stretch=False, anchor="e")
-        self.tree.column("date", width=140, minwidth=120, stretch=False)
+        self.tree.column("name", width=280, minwidth=120, stretch=False)
+        self.tree.column("status", width=280, minwidth=80, stretch=False)
+        self.tree.column("size", width=90, minwidth=50, stretch=False, anchor="e")
+        self.tree.column("date", width=140, minwidth=80, stretch=False)
         self.tree.heading("spacer", text="")
         self.tree.column("spacer", width=0, minwidth=0, stretch=True)
         self.tree.tag_configure("checked", background="#e8f0fe")
         self._refresh_headings()
+        self._locked_name_width: int | None = None
         self.tree.bind("<Button-1>", self._on_tree_click)
+        self.tree.bind("<B1-Motion>", self._on_column_drag)
+        self.tree.bind("<ButtonRelease-1>", self._on_column_drag_end)
         yscroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         xscroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
@@ -261,6 +264,14 @@ class App(tk.Tk):
 
     def _on_tree_click(self, event: tk.Event) -> str | None:
         region = self.tree.identify_region(event.x, event.y)
+        if region == "separator":
+            column = self.tree.identify_column(event.x)
+            # #1 is File; dragging that edge should change File. Other edges should not.
+            if column in {"#2", "#3", "#4", "#5"}:
+                self._locked_name_width = int(self.tree.column("name", "width"))
+            else:
+                self._locked_name_width = None
+            return None
         if region == "heading":
             if self.tree.identify_column(event.x) == "#0":
                 self._toggle_select_all()
@@ -271,6 +282,15 @@ class App(tk.Tk):
             return None
         self._toggle_check(row)
         return "break"
+
+    def _on_column_drag(self, _event: tk.Event) -> None:
+        if self._locked_name_width is not None:
+            self.tree.column("name", width=self._locked_name_width)
+
+    def _on_column_drag_end(self, _event: tk.Event) -> None:
+        if self._locked_name_width is not None:
+            self.tree.column("name", width=self._locked_name_width)
+        self._locked_name_width = None
 
     def _toggle_check(self, iid: str) -> None:
         self._set_checked(iid, iid not in self.checked)

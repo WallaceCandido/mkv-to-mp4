@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 COMMON_FFMPEG_PATHS = (
@@ -13,7 +14,28 @@ COMMON_FFMPEG_PATHS = (
 )
 
 
+def _bundled_ffmpeg() -> Path | None:
+    names = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        base = Path(meipass)
+        names.append(base / "ffmpeg" / "ffmpeg.exe")
+        names.append(base / "ffmpeg.exe")
+    if getattr(sys, "frozen", False):
+        names.append(Path(sys.executable).parent / "ffmpeg" / "ffmpeg.exe")
+    else:
+        names.append(Path(__file__).resolve().parent / "ffmpeg" / "ffmpeg.exe")
+        names.append(Path(__file__).resolve().parent / "tools" / "ffmpeg" / "ffmpeg.exe")
+    for candidate in names:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def find_ffmpeg() -> str | None:
+    bundled = _bundled_ffmpeg()
+    if bundled:
+        return str(bundled)
     found = shutil.which("ffmpeg")
     if found:
         return found
