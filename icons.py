@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import math
 import struct
 import zlib
 import tkinter as tk
@@ -156,7 +157,14 @@ def _photo(root: tk.Misc, pixels: list[list[tuple[int, int, int, int]]]) -> tk.P
     return tk.PhotoImage(master=root, data=base64.b64encode(png))
 
 
-def checkbox(root: tk.Misc, *, checked: bool, mixed: bool = False, size: int = 18) -> tk.PhotoImage:
+def checkbox(
+    root: tk.Misc,
+    *,
+    checked: bool,
+    mixed: bool = False,
+    size: int = 18,
+    empty_fill: tuple[int, int, int, int] = (255, 255, 255, 230),
+) -> tk.PhotoImage:
     pixels = _blank(size, size)
     pad = 1.6
     _stamp_round_rect(
@@ -166,7 +174,7 @@ def checkbox(root: tk.Misc, *, checked: bool, mixed: bool = False, size: int = 1
         size - 1 - pad,
         size - 1 - pad,
         radius=4.2,
-        fill=BLUE if (checked or mixed) else (255, 255, 255, 230),
+        fill=BLUE if (checked or mixed) else empty_fill,
         stroke=None if (checked or mixed) else BORDER,
         stroke_width=1.35,
     )
@@ -200,11 +208,48 @@ def write_png(path: Path, pixels: list[list[tuple[int, int, int, int]]]) -> None
     Path(path).write_bytes(_png(len(pixels[0]), len(pixels), pixels))
 
 
+def gear_icon(
+    root: tk.Misc,
+    *,
+    size: int = 20,
+    color: tuple[int, int, int, int] = (71, 85, 105, 255),
+) -> tk.PhotoImage:
+    pixels = _blank(size, size)
+    cx = cy = size / 2
+    outer = size * 0.28
+    hole = size * 0.12
+    tooth = size * 0.11
+    for y in range(size):
+        for x in range(size):
+            px, py = x + 0.5 - cx, y + 0.5 - cy
+            dist = (px * px + py * py) ** 0.5
+            cover = 0.0
+            if hole < dist <= outer:
+                cover = 1.0
+            elif dist <= hole:
+                cover = max(0.0, 1.0 - (hole - dist))
+            for i in range(6):
+                a = i * math.pi / 3
+                tx = math.cos(a) * (outer + tooth * 0.15)
+                ty = math.sin(a) * (outer + tooth * 0.15)
+                dx, dy = px - tx, py - ty
+                along = dx * math.cos(a) + dy * math.sin(a)
+                across = -dx * math.sin(a) + dy * math.cos(a)
+                if abs(across) <= tooth * 0.55 and 0 <= along <= tooth * 1.15:
+                    cover = max(cover, 1.0)
+            if cover:
+                pixels[y][x] = _blend(pixels[y][x], color, min(1.0, cover))
+    return _photo(root, pixels)
+
+
 class IconSet:
-    def __init__(self, root: tk.Misc) -> None:
-        self.unchecked = checkbox(root, checked=False)
+    def __init__(self, root: tk.Misc, *, dark: bool = False) -> None:
+        empty = (38, 38, 38, 255) if dark else (255, 255, 255, 230)
+        gear = (212, 212, 212, 255) if dark else (82, 82, 82, 255)
+        self.unchecked = checkbox(root, checked=False, empty_fill=empty)
         self.checked = checkbox(root, checked=True)
         self.mixed = checkbox(root, checked=False, mixed=True)
         self.sort_none = sort_mark(root, state="none")
         self.sort_asc = sort_mark(root, state="asc")
         self.sort_desc = sort_mark(root, state="desc")
+        self.gear = gear_icon(root, color=gear)

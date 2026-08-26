@@ -22,6 +22,8 @@ class StreamDeckApi:
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
+        if self.running:
+            return
         handler = _make_handler(self.app)
         try:
             self._httpd = ThreadingHTTPServer(("127.0.0.1", self.port), handler)
@@ -32,9 +34,16 @@ class StreamDeckApi:
         self._thread.start()
 
     def stop(self) -> None:
-        if self._httpd:
-            self._httpd.shutdown()
-            self._httpd = None
+        httpd = self._httpd
+        thread = self._thread
+        self._httpd = None
+        self._thread = None
+        if httpd:
+            httpd.shutdown()
+        if thread:
+            thread.join(timeout=2)
+        if httpd:
+            httpd.server_close()
 
     @property
     def running(self) -> bool:

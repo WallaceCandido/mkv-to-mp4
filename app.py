@@ -15,6 +15,7 @@ from tkinter import filedialog, messagebox, ttk
 from icons import IconSet
 from remux import find_ffmpeg, output_path_for, remux_mkv_to_mp4
 from streamdeck_api import DEFAULT_PORT, StreamDeckApi
+from widgets import FONT, FONT_LOG, FONT_SMALL, Field, FlatButton, IconCheck, flatten_tree_style
 
 POLL_SECONDS = 2.0
 STABLE_CHECKS = 2
@@ -27,6 +28,41 @@ STATUS_REMUXING = "Remuxing…"
 STATUS_DONE = "Remuxed"
 STATUS_FAILED = "Failed"
 STATUS_SKIPPED = "MP4 already exists"
+
+LIGHT = {
+    "bg": "#f4f4f5",
+    "fg": "#18181b",
+    "muted": "#737373",
+    "field": "#ffffff",
+    "tree": "#ffffff",
+    "heading": "#f4f4f5",
+    "checked": "#f4f4f5",
+    "select": "#e5e5e5",
+    "log": "#fafafa",
+    "border": "#e5e5e5",
+    "button": "#ececec",
+    "button_hover": "#e5e5e5",
+    "accent": "#2563eb",
+    "accent_hover": "#1d4ed8",
+    "accent_fg": "#ffffff",
+}
+DARK = {
+    "bg": "#171717",
+    "fg": "#f5f5f5",
+    "muted": "#a3a3a3",
+    "field": "#262626",
+    "tree": "#1f1f1f",
+    "heading": "#262626",
+    "checked": "#2a2a2a",
+    "select": "#2f2f2f",
+    "log": "#141414",
+    "border": "#2e2e2e",
+    "button": "#2a2a2a",
+    "button_hover": "#333333",
+    "accent": "#3b82f6",
+    "accent_hover": "#2563eb",
+    "accent_fg": "#ffffff",
+}
 
 
 def load_config() -> dict:
@@ -108,8 +144,9 @@ class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("MKV to MP4")
-        self.minsize(880, 520)
-        self.geometry("1020x620")
+        self.minsize(920, 600)
+        self.geometry("1080x740")
+        self.option_add("*Font", FONT)
 
         self.ffmpeg = find_ffmpeg()
         cfg = load_config()
@@ -120,7 +157,11 @@ class App(tk.Tk):
             same = True
         self.same_output = tk.BooleanVar(value=same)
         self.recursive = tk.BooleanVar(value=False)
+        self.show_log = tk.BooleanVar(value=bool(cfg.get("show_log", True)))
+        self.stream_deck_enabled = tk.BooleanVar(value=bool(cfg.get("stream_deck", True)))
+        self.dark_mode = tk.BooleanVar(value=bool(cfg.get("dark_mode", False)))
         self.watching = False
+        self._settings_win: tk.Toplevel | None = None
 
         self.baseline: set[str] = set()
         self.file_status: dict[str, str] = {}
@@ -139,22 +180,65 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(200, self._drain_ui_events)
         self._refresh_ffmpeg_label()
-        self.deck_api.start()
-        if self.deck_api.running:
-            self.streamdeck_label.configure(text=f"Stream Deck: :{DEFAULT_PORT}")
-        else:
-            self.streamdeck_label.configure(text="Stream Deck: port busy")
+        self._apply_theme()
+        self._apply_log_visibility()
+        self._apply_stream_deck()
 
         if self.watch_folder.get():
             self.refresh_file_list(initial=True)
 
+    def _colors(self) -> dict[str, str]:
+        return DARK if self.dark_mode.get() else LIGHT
+
+    def _frame(self, parent: tk.Misc) -> tk.Frame:
+        frame = tk.Frame(parent, bg=self._colors()["bg"])
+        self._shell.append(frame)
+        return frame
+
+    def _label(self, parent: tk.Misc, text: str, *, muted: bool = False) -> tk.Label:
+        colors = self._colors()
+        label = tk.Label(
+            parent,
+            text=text,
+            font=FONT_SMALL if muted else FONT,
+            bg=colors["bg"],
+            fg=colors["muted"] if muted else colors["fg"],
+            anchor="w",
+        )
+        self._labels.append((label, muted))
+        return label
+
+    def _icon_check(
+        self,
+        parent: tk.Misc,
+        text: str,
+        variable: tk.BooleanVar,
+        command,
+    ) -> IconCheck:
+        widget = IconCheck(
+            parent,
+            text=text,
+            variable=variable,
+            command=command,
+            get_icons=lambda: self.icons,
+            get_colors=self._colors,
+        )
+        self._checks.append(widget)
+        return widget
+
     def _build(self) -> None:
-        self.icons = IconSet(self)
-        style = ttk.Style(self)
-        style.configure("Treeview", rowheight=30, indent=0)
-        style.configure("Treeview.Heading", padding=(8, 6))
+        self.icons = IconSet(self, dark=self.dark_mode.get())
+        self._shell: list[tk.Frame] = []
+        self._labels: list[tuple[tk.Label, bool]] = []
+        self._buttons: list[FlatButton] = []
+        self._checks: list[IconCheck] = []
+        self.style = ttk.Style(self)
         try:
-            style.layout(
+            self.style.theme_use("clam")
+        except tk.TclError:
+            pass
+        try:
+            self.style.layout(
                 "Treeview.Item",
                 [
                     (
@@ -172,59 +256,80 @@ class App(tk.Tk):
         except tk.TclError:
             pass
 
-        pad = {"padx": 12, "pady": 6}
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(3, weight=1)
 
-        header = ttk.Frame(self)
-        header.pack(fill="x", **pad)
-        ttk.Label(header, text="Watch folder").pack(anchor="w")
+        header = self._frame(self)
+        header.grid(row=0, column=0, sticky="ew", padx=20, pady=(16, 8))
+        title_row = self._frame(header)
+        title_row.pack(fill="x")
+        self._label(title_row, "Watch folder").pack(side="left")
+        self.settings_btn = tk.Button(
+            title_row,
+            image=self.icons.gear,
+            command=self.open_settings,
+            bd=0,
+            highlightthickness=0,
+            cursor="hand2",
+            takefocus=0,
+        )
+        self.settings_btn.pack(side="right")
 
-        row = ttk.Frame(header)
-        row.pack(fill="x", pady=(4, 0))
-        ttk.Entry(row, textvariable=self.watch_folder).pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="Browse…", command=self.browse_folder).pack(side="left", padx=(8, 0))
+        row = self._frame(header)
+        row.pack(fill="x", pady=(6, 0))
+        self.watch_entry = Field(row, textvariable=self.watch_folder)
+        self.watch_entry.pack(side="left", fill="x", expand=True, ipady=6)
+        browse = FlatButton(row, text="Browse…", command=self.browse_folder)
+        browse.pack(side="left", padx=(8, 0))
+        self._buttons.append(browse)
 
-        ttk.Label(header, text="Save MP4s to").pack(anchor="w", pady=(8, 0))
-        out_row = ttk.Frame(header)
-        out_row.pack(fill="x", pady=(4, 0))
-        self.output_entry = ttk.Entry(out_row, textvariable=self.output_folder)
-        self.output_entry.pack(side="left", fill="x", expand=True)
-        self.output_browse = ttk.Button(out_row, text="Browse…", command=self.browse_output_folder)
+        self._label(header, "Save MP4s to").pack(anchor="w", pady=(12, 0))
+        out_row = self._frame(header)
+        out_row.pack(fill="x", pady=(6, 0))
+        self.output_entry = Field(out_row, textvariable=self.output_folder)
+        self.output_entry.pack(side="left", fill="x", expand=True, ipady=6)
+        self.output_browse = FlatButton(out_row, text="Browse…", command=self.browse_output_folder)
         self.output_browse.pack(side="left", padx=(8, 0))
-        ttk.Checkbutton(
+        self._buttons.append(self.output_browse)
+        self._icon_check(
             header,
-            text="Save next to the MKV (same folder)",
-            variable=self.same_output,
-            command=self._sync_output_controls,
-        ).pack(anchor="w", pady=(4, 0))
+            "Save next to the MKV (same folder)",
+            self.same_output,
+            self._sync_output_controls,
+        ).pack(anchor="w", pady=(8, 0))
 
-        controls = ttk.Frame(self)
-        controls.pack(fill="x", **pad)
-        self.start_btn = ttk.Button(controls, text="Start watching", command=self.start_watching)
+        controls = self._frame(self)
+        controls.grid(row=1, column=0, sticky="ew", padx=20, pady=4)
+        self.start_btn = FlatButton(controls, text="Start watching", variant="primary", command=self.start_watching)
         self.start_btn.pack(side="left")
-        self.stop_btn = ttk.Button(controls, text="Stop", command=self.stop_watching, state="disabled")
+        self.stop_btn = FlatButton(controls, text="Stop", command=self.stop_watching, state="disabled")
         self.stop_btn.pack(side="left", padx=(8, 0))
-        ttk.Checkbutton(
-            controls,
-            text="Include subfolders",
-            variable=self.recursive,
-            command=self.on_recursive_toggle,
-        ).pack(side="left", padx=(16, 0))
-        self.ffmpeg_label = ttk.Label(controls, text="")
+        self._buttons.extend((self.start_btn, self.stop_btn))
+        self._icon_check(controls, "Include subfolders", self.recursive, self.on_recursive_toggle).pack(
+            side="left", padx=(16, 0)
+        )
+        self.ffmpeg_label = self._label(controls, "", muted=True)
         self.ffmpeg_label.pack(side="right")
-        self.streamdeck_label = ttk.Label(controls, text="")
+        self.streamdeck_label = self._label(controls, "", muted=True)
         self.streamdeck_label.pack(side="right", padx=(0, 16))
 
-        hint = ttk.Label(
+        self.hint = tk.Label(
             self,
             text="Existing .mkv files are listed but never remuxed automatically. "
             "Only files that appear after you start watching are remuxed on their own. "
             "If a shared folder is read-only, save MP4s to a local folder instead.",
-            wraplength=860,
+            wraplength=980,
+            justify="left",
+            font=FONT_SMALL,
+            anchor="w",
         )
-        hint.pack(fill="x", padx=12)
+        self.hint.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 8))
+        self._labels.append((self.hint, True))
 
-        tree_frame = ttk.Frame(self)
-        tree_frame.pack(fill="both", expand=True, padx=12, pady=6)
+        self.list_shell = tk.Frame(self)
+        self.list_shell.grid(row=3, column=0, sticky="nsew", padx=20, pady=4)
+        tree_frame = tk.Frame(self.list_shell)
+        tree_frame.pack(fill="both", expand=True, padx=1, pady=1)
         tree_frame.rowconfigure(0, weight=1)
         tree_frame.columnconfigure(0, weight=1)
         self.tree = ttk.Treeview(
@@ -240,36 +345,50 @@ class App(tk.Tk):
         self.tree.column("date", width=140, minwidth=80, stretch=False)
         self.tree.heading("spacer", text="")
         self.tree.column("spacer", width=0, minwidth=0, stretch=True)
-        self.tree.tag_configure("checked", background="#e8f0fe")
         self._refresh_headings()
         self._locked_name_width: int | None = None
         self.tree.bind("<Button-1>", self._on_tree_click)
         self.tree.bind("<B1-Motion>", self._on_column_drag)
         self.tree.bind("<ButtonRelease-1>", self._on_column_drag_end)
-        yscroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
-        xscroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
+        yscroll = ttk.Scrollbar(
+            tree_frame, orient="vertical", command=self.tree.yview, style="Modern.Vertical.TScrollbar"
+        )
+        xscroll = ttk.Scrollbar(
+            tree_frame, orient="horizontal", command=self.tree.xview, style="Modern.Horizontal.TScrollbar"
+        )
         self.tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
         self.tree.grid(row=0, column=0, sticky="nsew")
         yscroll.grid(row=0, column=1, sticky="ns")
         xscroll.grid(row=1, column=0, sticky="ew")
 
-        actions = ttk.Frame(self)
-        actions.pack(fill="x", **pad)
-        ttk.Button(actions, text="Remux selected", command=self.remux_selected).pack(side="left")
-        ttk.Button(actions, text="Select all", command=lambda: self._set_all_checked(True)).pack(
-            side="left", padx=(8, 0)
-        )
-        ttk.Button(actions, text="Clear", command=lambda: self._set_all_checked(False)).pack(
-            side="left", padx=(8, 0)
-        )
-        ttk.Button(actions, text="Refresh list", command=lambda: self.refresh_file_list()).pack(
-            side="left", padx=(8, 0)
-        )
-        ttk.Button(actions, text="Open folder", command=self.open_folder).pack(side="left", padx=(8, 0))
+        actions = self._frame(self)
+        actions.grid(row=4, column=0, sticky="ew", padx=20, pady=8)
+        for text, cmd in (
+            ("Remux selected", self.remux_selected),
+            ("Select all", lambda: self._set_all_checked(True)),
+            ("Clear", lambda: self._set_all_checked(False)),
+            ("Refresh list", lambda: self.refresh_file_list()),
+            ("Open folder", self.open_folder),
+        ):
+            btn = FlatButton(actions, text=text, command=cmd)
+            btn.pack(side="left", padx=(0, 8))
+            self._buttons.append(btn)
 
-        ttk.Label(self, text="Log").pack(anchor="w", padx=12)
-        self.log = tk.Text(self, height=8, wrap="word", state="disabled")
-        self.log.pack(fill="x", padx=12, pady=(0, 12))
+        self.log_frame = self._frame(self)
+        self.log_label = self._label(self.log_frame, "Log", muted=True)
+        self.log_label.pack(anchor="w")
+        self.log = tk.Text(
+            self.log_frame,
+            height=7,
+            wrap="word",
+            state="disabled",
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            font=FONT_LOG,
+        )
+        self.log.pack(fill="both", expand=True, pady=(6, 0))
+        self._log_grid = {"row": 5, "column": 0, "sticky": "ew", "padx": 20, "pady": (0, 16)}
 
         threading.Thread(target=self._worker_loop, daemon=True).start()
         self._sync_output_controls()
@@ -280,13 +399,164 @@ class App(tk.Tk):
                 "watch_folder": self.watch_folder.get().strip(),
                 "output_folder": self.output_folder.get().strip(),
                 "same_output": self.same_output.get(),
+                "show_log": self.show_log.get(),
+                "stream_deck": self.stream_deck_enabled.get(),
+                "dark_mode": self.dark_mode.get(),
             }
         )
 
+    def open_settings(self) -> None:
+        if self._settings_win is not None and self._settings_win.winfo_exists():
+            self._settings_win.lift()
+            self._settings_win.focus_force()
+            return
+        colors = self._colors()
+        win = tk.Toplevel(self)
+        self._settings_win = win
+        win.title("Settings")
+        win.resizable(False, False)
+        win.transient(self)
+        win.configure(bg=colors["bg"])
+        frame = tk.Frame(win, bg=colors["bg"], padx=22, pady=18)
+        frame.pack(fill="both", expand=True)
+        tk.Label(frame, text="Settings", font=FONT, bg=colors["bg"], fg=colors["fg"]).pack(anchor="w", pady=(0, 12))
+        for text, var, cmd in (
+            ("Show log", self.show_log, self._on_show_log_toggle),
+            ("Stream Deck connection", self.stream_deck_enabled, self._on_stream_deck_toggle),
+            ("Dark mode", self.dark_mode, self._on_dark_mode_toggle),
+        ):
+            check = IconCheck(
+                frame,
+                text=text,
+                variable=var,
+                command=cmd,
+                get_icons=lambda: self.icons,
+                get_colors=self._colors,
+            )
+            check.pack(anchor="w", pady=5)
+            self._checks.append(check)
+        close = FlatButton(frame, text="Close", command=self._close_settings)
+        close.pack(anchor="e", pady=(16, 0))
+        close.paint(colors)
+        win.protocol("WM_DELETE_WINDOW", self._close_settings)
+        win.update_idletasks()
+        x = self.winfo_rootx() + self.winfo_width() - win.winfo_reqwidth() - 28
+        y = self.winfo_rooty() + 56
+        win.geometry(f"+{x}+{y}")
+
+    def _close_settings(self) -> None:
+        if self._settings_win is not None and self._settings_win.winfo_exists():
+            for child in self._settings_win.winfo_children():
+                self._forget_settings_checks(child)
+            self._settings_win.destroy()
+        self._settings_win = None
+
+    def _forget_settings_checks(self, widget: tk.Misc) -> None:
+        if isinstance(widget, IconCheck) and widget in self._checks:
+            self._checks.remove(widget)
+        for child in widget.winfo_children():
+            self._forget_settings_checks(child)
+
+    def _on_show_log_toggle(self) -> None:
+        self._apply_log_visibility()
+        self.persist_settings()
+
+    def _on_stream_deck_toggle(self) -> None:
+        self._apply_stream_deck()
+        self.persist_settings()
+        if not self.stream_deck_enabled.get():
+            self.log_line("Stream Deck connection turned off.")
+        elif self.deck_api.running:
+            self.log_line(f"Stream Deck connection turned on (port {DEFAULT_PORT}).")
+        else:
+            self.log_line("Stream Deck connection could not start: port busy.")
+
+    def _on_dark_mode_toggle(self) -> None:
+        self._apply_theme()
+        self.persist_settings()
+
+    def _apply_log_visibility(self) -> None:
+        if self.show_log.get():
+            self.log_frame.grid(**self._log_grid)
+        else:
+            self.log_frame.grid_remove()
+
+    def _apply_stream_deck(self) -> None:
+        if self.stream_deck_enabled.get():
+            if not self.deck_api.running:
+                self.deck_api.start()
+            if self.deck_api.running:
+                self.streamdeck_label.configure(text=f"Stream Deck: :{DEFAULT_PORT}")
+            else:
+                self.streamdeck_label.configure(text="Stream Deck: port busy")
+        else:
+            self.deck_api.stop()
+            self.streamdeck_label.configure(text="Stream Deck: off")
+
+    def _apply_theme(self) -> None:
+        colors = self._colors()
+        self.icons = IconSet(self, dark=self.dark_mode.get())
+        self.configure(bg=colors["bg"])
+        self.settings_btn.configure(image=self.icons.gear, bg=colors["bg"], activebackground=colors["button"])
+        self.settings_btn.image = self.icons.gear
+        for frame in self._shell:
+            if frame.winfo_exists():
+                frame.configure(bg=colors["bg"])
+        if self.list_shell.winfo_exists():
+            self.list_shell.configure(bg=colors["border"])
+            for child in self.list_shell.winfo_children():
+                child.configure(bg=colors["tree"])
+        for label, muted in self._labels:
+            if label.winfo_exists():
+                label.configure(bg=colors["bg"], fg=colors["muted"] if muted else colors["fg"])
+        self.watch_entry.paint(colors)
+        self.output_entry.paint(colors, enabled=not self.same_output.get())
+        for btn in self._buttons:
+            if btn.winfo_exists():
+                btn.paint(colors)
+        for check in list(self._checks):
+            if check.winfo_exists():
+                check.paint()
+            else:
+                self._checks.remove(check)
+        flatten_tree_style(self.style, colors)
+        self.tree.tag_configure("checked", background=colors["checked"])
+        self.log.configure(
+            bg=colors["log"],
+            fg=colors["fg"],
+            insertbackground=colors["fg"],
+            highlightbackground=colors["border"],
+            highlightcolor=colors["border"],
+        )
+        if self._settings_win is not None and self._settings_win.winfo_exists():
+            self._settings_win.configure(bg=colors["bg"])
+            self._paint_widget_tree(self._settings_win, colors)
+        for iid in self.tree.get_children(""):
+            on = iid in self.checked
+            self.tree.item(iid, image=self.icons.checked if on else self.icons.unchecked)
+        self._refresh_headings()
+
+    def _paint_widget_tree(self, widget: tk.Misc, colors: dict[str, str]) -> None:
+        try:
+            if isinstance(widget, FlatButton):
+                widget.paint(colors)
+            elif isinstance(widget, IconCheck):
+                widget.paint()
+            elif isinstance(widget, (tk.Frame, tk.Label, tk.Toplevel)):
+                widget.configure(bg=colors["bg"])
+                if isinstance(widget, tk.Label):
+                    widget.configure(fg=colors["fg"])
+        except tk.TclError:
+            return
+        for child in widget.winfo_children():
+            self._paint_widget_tree(child, colors)
+
     def _sync_output_controls(self) -> None:
-        state = "disabled" if self.same_output.get() else "normal"
-        self.output_entry.configure(state=state)
-        self.output_browse.configure(state=state)
+        enabled = not self.same_output.get()
+        self.output_entry.configure(state="normal" if enabled else "disabled")
+        self.output_browse.configure(state="normal" if enabled else "disabled")
+        self.output_entry.paint(self._colors(), enabled=enabled)
+        self.output_browse.paint(self._colors())
         self.persist_settings()
 
     def output_dir_path(self) -> Path | None:
@@ -580,6 +850,8 @@ class App(tk.Tk):
         self.watching = True
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
+        self.start_btn.paint(self._colors())
+        self.stop_btn.paint(self._colors())
         self.refresh_file_list()
         self.log_line(f"Watching {folder}")
         dest = self.output_dir_path()
@@ -597,6 +869,8 @@ class App(tk.Tk):
         self.watching = False
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
+        self.start_btn.paint(self._colors())
+        self.stop_btn.paint(self._colors())
         self.log_line("Stopped watching.")
 
     def open_folder(self) -> None:
