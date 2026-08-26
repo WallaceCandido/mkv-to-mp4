@@ -57,11 +57,8 @@ def format_size(num: int) -> str:
     return f"{num:.1f} TB"
 
 
-def format_mtime(path: Path) -> str:
-    try:
-        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-    except OSError:
-        return ""
+LIST_COLUMNS = ("name", "status", "size", "date")
+COLUMN_TITLES = {"name": "File", "status": "Status", "size": "Size", "date": "Date"}
 
 
 def display_name(path: Path, folder: Path | None) -> str:
@@ -73,16 +70,34 @@ def display_name(path: Path, folder: Path | None) -> str:
     return path.name
 
 
-def row_values(path: Path, folder: Path | None, status: str) -> tuple[str, str, str, str]:
-    size = ""
-    date = ""
-    if path.is_file():
+def file_row(
+    path: Path, folder: Path | None, status: str
+) -> tuple[tuple[str, str, str, str, str], dict[str, object]]:
+    size_bytes = 0
+    mtime = 0.0
+    exists = path.is_file()
+    if exists:
         try:
-            size = format_size(path.stat().st_size)
-            date = format_mtime(path)
+            stat = path.stat()
+            size_bytes = stat.st_size
+            mtime = stat.st_mtime
         except OSError:
-            pass
-    return (display_name(path, folder), status, size, date)
+            exists = False
+    name = display_name(path, folder)
+    values = (
+        name,
+        status,
+        format_size(size_bytes) if exists else "",
+        datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if exists else "",
+        "",
+    )
+    keys = {
+        "name": name.casefold(),
+        "status": status.casefold(),
+        "size": size_bytes,
+        "date": mtime,
+    }
+    return values, keys
 
 
 class App(tk.Tk):
@@ -103,6 +118,9 @@ class App(tk.Tk):
         self.queued: set[str] = set()
         self.jobs: queue.Queue[tuple[str, Path]] = queue.Queue()
         self.ui_events: queue.Queue[tuple] = queue.Queue()
+        self.sort_column = "name"
+        self.sort_reverse = False
+        self.sort_keys: dict[str, dict[str, object]] = {}
 
         self._build()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -147,22 +165,30 @@ class App(tk.Tk):
         )
         hint.pack(fill="x", padx=12)
 
-        columns = ("name", "status", "size", "date")
-        self.tree = ttk.Treeview(self, columns=columns, show="headings", selectmode="extended")
-        self.tree.heading("name", text="File")
-        self.tree.heading("status", text="Status")
-        self.tree.heading("size", text="Size")
-        self.tree.heading("date", text="Date")
-        self.tree.column("name", width=420)
-        self.tree.column("status", width=180)
-        self.tree.column("size", width=100, anchor="e")
-        self.tree.column("date", width=140)
         tree_frame = ttk.Frame(self)
         tree_frame.pack(fill="both", expand=True, padx=12, pady=6)
-        scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scroll.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.columnconfigure(0, weight=1)
+        self.tree = ttk.Treeview(
+            tree_frame,
+            columns=(*LIST_COLUMNS, "spacer"),
+            show="headings",
+            selectmode="extended",
+        )
+        self.tree.column("#0", width=0, minwidth=0, stretch=False)
+        self.tree.column("name", width=280, minwidth=120, stretch=True)
+        self.tree.column("status", width=280, minwidth=160, stretch=False)
+        self.tree.column("size", width=90, minwidth=70, stretch=False, anchor="e")
+        self.tree.column("date", width=140, minwidth=120, stretch=False)
+        self.tree.heading("spacer", text="")
+        self.tree.column("spacer", width=0, minwidth=0, stretch=True)
+        self._refresh_headings()
+        yscroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        xscroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
 
         actions = ttk.Frame(self)
         actions.pack(fill="x", **pad)
@@ -177,6 +203,42 @@ class App(tk.Tk):
         self.log.pack(fill="x", padx=12, pady=(0, 12))
 
         threading.Thread(target=self._worker_loop, daemon=True).start()
+
+    def _refresh_headings(self) -> None:
+        for column in LIST_COLUMNS:
+            title = COLUMN_TITLES[column]
+            if column == self.sort_column:
+                title = f"{title} {'▼' if self.sort_reverse else '▲'}"
+            self.tree.heading(column, text=title, command=lambda c=column: self.sort_by(c))
+
+    def sort_by(self, column: str) -> None:
+        if self.sort_column == column:
+            self.sort_reverse = not self.sort_reverse
+        else:
+            self.sort_column = column
+            self.sort_reverse = False
+        self._refresh_headings()
+        self._apply_sort()
+
+    def _apply_sort(self) -> None:
+        rows = list(self.tree.get_children(""))
+        rows.sort(
+            key=lambda iid: self.sort_keys.get(iid, {}).get(self.sort_column, ""),
+            reverse=self.sort_reverse,
+        )
+        for index, iid in enumerate(rows):
+            self.tree.move(iid, "", index)
+
+    def _put_row(self, path: Path, status: str, *, apply_sort: bool = True) -> None:
+        key = str(path)
+        values, keys = file_row(path, self.folder_path(), status)
+        self.sort_keys[key] = keys
+        if self.tree.exists(key):
+            self.tree.item(key, values=values)
+        else:
+            self.tree.insert("", "end", iid=key, values=values)
+        if apply_sort:
+            self._apply_sort()
 
     def _refresh_ffmpeg_label(self) -> None:
         if self.ffmpeg:
@@ -216,6 +278,7 @@ class App(tk.Tk):
     def refresh_file_list(self, initial: bool = False) -> None:
         folder = self.folder_path()
         self.tree.delete(*self.tree.get_children())
+        self.sort_keys.clear()
         if not folder or not folder.is_dir():
             return
         files = list_mkv_files(folder, self.recursive.get())
@@ -228,7 +291,8 @@ class App(tk.Tk):
             status = self.file_status.get(key, STATUS_EXISTING)
             if status == STATUS_EXISTING and output_path_for(path).is_file():
                 status = f"{STATUS_EXISTING} · {STATUS_SKIPPED}"
-            self.tree.insert("", "end", iid=key, values=row_values(path, folder, status))
+            self._put_row(path, status, apply_sort=False)
+        self._apply_sort()
 
     def start_watching(self) -> None:
         folder = self.folder_path()
@@ -302,9 +366,7 @@ class App(tk.Tk):
         self.log_line(f"Queued ({reason}): {path.name}")
 
     def _set_row_status(self, path: Path, status: str) -> None:
-        key = str(path)
-        if self.tree.exists(key):
-            self.tree.item(key, values=row_values(path, self.folder_path(), status))
+        self._put_row(path, status)
 
     def _watch_loop(self) -> None:
         while self.watching:
@@ -368,13 +430,7 @@ class App(tk.Tk):
                 self.log_line(event[1])
             elif kind == "upsert":
                 path, status = event[1], event[2]
-                folder = self.folder_path()
-                key = str(path)
-                values = row_values(path, folder, status)
-                if self.tree.exists(key):
-                    self.tree.item(key, values=values)
-                else:
-                    self.tree.insert("", "end", iid=key, values=values)
+                self._put_row(path, status)
             elif kind == "enqueue_auto":
                 self._enqueue(event[1], reason="new file")
             elif kind == "done":
