@@ -8,6 +8,7 @@ import queue
 import threading
 import time
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -56,12 +57,40 @@ def format_size(num: int) -> str:
     return f"{num:.1f} TB"
 
 
+def format_mtime(path: Path) -> str:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    except OSError:
+        return ""
+
+
+def display_name(path: Path, folder: Path | None) -> str:
+    if folder and folder in path.parents:
+        try:
+            return str(path.relative_to(folder))
+        except ValueError:
+            return path.name
+    return path.name
+
+
+def row_values(path: Path, folder: Path | None, status: str) -> tuple[str, str, str, str]:
+    size = ""
+    date = ""
+    if path.is_file():
+        try:
+            size = format_size(path.stat().st_size)
+            date = format_mtime(path)
+        except OSError:
+            pass
+    return (display_name(path, folder), status, size, date)
+
+
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("MKV to MP4")
-        self.minsize(760, 520)
-        self.geometry("900x620")
+        self.minsize(880, 520)
+        self.geometry("1020x620")
 
         self.ffmpeg = find_ffmpeg()
         self.watch_folder = tk.StringVar(value=load_config().get("watch_folder", ""))
@@ -118,14 +147,16 @@ class App(tk.Tk):
         )
         hint.pack(fill="x", padx=12)
 
-        columns = ("name", "status", "size")
+        columns = ("name", "status", "size", "date")
         self.tree = ttk.Treeview(self, columns=columns, show="headings", selectmode="extended")
         self.tree.heading("name", text="File")
         self.tree.heading("status", text="Status")
         self.tree.heading("size", text="Size")
-        self.tree.column("name", width=480)
+        self.tree.heading("date", text="Date")
+        self.tree.column("name", width=420)
         self.tree.column("status", width=180)
         self.tree.column("size", width=100, anchor="e")
+        self.tree.column("date", width=140)
         tree_frame = ttk.Frame(self)
         tree_frame.pack(fill="both", expand=True, padx=12, pady=6)
         scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
@@ -197,8 +228,7 @@ class App(tk.Tk):
             status = self.file_status.get(key, STATUS_EXISTING)
             if status == STATUS_EXISTING and output_path_for(path).is_file():
                 status = f"{STATUS_EXISTING} · {STATUS_SKIPPED}"
-            rel = path.name if path.parent == folder else str(path.relative_to(folder))
-            self.tree.insert("", "end", iid=key, values=(rel, status, format_size(path.stat().st_size)))
+            self.tree.insert("", "end", iid=key, values=row_values(path, folder, status))
 
     def start_watching(self) -> None:
         folder = self.folder_path()
@@ -274,14 +304,7 @@ class App(tk.Tk):
     def _set_row_status(self, path: Path, status: str) -> None:
         key = str(path)
         if self.tree.exists(key):
-            values = list(self.tree.item(key, "values"))
-            if len(values) >= 2:
-                values[1] = status
-                try:
-                    values[2] = format_size(path.stat().st_size)
-                except OSError:
-                    pass
-                self.tree.item(key, values=values)
+            self.tree.item(key, values=row_values(path, self.folder_path(), status))
 
     def _watch_loop(self) -> None:
         while self.watching:
@@ -347,17 +370,11 @@ class App(tk.Tk):
                 path, status = event[1], event[2]
                 folder = self.folder_path()
                 key = str(path)
-                rel = path.name
-                if folder and folder in path.parents:
-                    try:
-                        rel = str(path.relative_to(folder))
-                    except ValueError:
-                        rel = path.name
-                size = format_size(path.stat().st_size) if path.is_file() else ""
+                values = row_values(path, folder, status)
                 if self.tree.exists(key):
-                    self.tree.item(key, values=(rel, status, size))
+                    self.tree.item(key, values=values)
                 else:
-                    self.tree.insert("", "end", iid=key, values=(rel, status, size))
+                    self.tree.insert("", "end", iid=key, values=values)
             elif kind == "enqueue_auto":
                 self._enqueue(event[1], reason="new file")
             elif kind == "done":
