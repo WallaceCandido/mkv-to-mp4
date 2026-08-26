@@ -2,10 +2,10 @@
   "SDKVersion": 2,
   "Author": "WallaceCandido",
   "CodePath": "plugin.html",
-  "Description": "Start or stop MKV to MP4 folder watching from Stream Deck. The desktop app must be running on this computer.",
-  "Name": "MKV to MP4",
+  "Description": "Start or stop Remuxr folder watching from Stream Deck. The desktop app must be running on this computer.",
+  "Name": "Remuxr",
   "Icon": "imgs/category",
-  "Category": "MKV to MP4",
+  "Category": "Remuxr",
   "CategoryIcon": "imgs/category",
   "URL": "https://github.com/WallaceCandido/mkv-to-mp4",
   "Version": "1.0.0",
@@ -19,7 +19,7 @@
     "MinimumVersion": "6.0"
   },
   "ApplicationsToMonitor": {
-    "windows": ["MKV to MP4.exe", "python.exe"]
+    "windows": ["Remuxr.exe", "MKV to MP4.exe", "python.exe"]
   },
   "Actions": [
     {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import sys
 import threading
 import time
 import tkinter as tk
@@ -21,6 +22,21 @@ POLL_SECONDS = 2.0
 STABLE_CHECKS = 2
 APP_DIR = Path(os.environ.get("APPDATA", Path.home())) / "mkv-to-mp4"
 CONFIG_PATH = APP_DIR / "config.json"
+APP_NAME = "Remuxr"
+
+
+def asset_path(name: str) -> Path:
+    bases = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        bases.append(Path(meipass) / "assets")
+        bases.append(Path(meipass))
+    bases.append(Path(__file__).resolve().parent / "assets")
+    for base in bases:
+        path = base / name
+        if path.is_file():
+            return path
+    return bases[-1] / name
 
 STATUS_EXISTING = "Existing (manual only)"
 STATUS_DETECTED = "New — waiting"
@@ -42,8 +58,8 @@ LIGHT = {
     "border": "#e5e5e5",
     "button": "#ececec",
     "button_hover": "#e5e5e5",
-    "accent": "#2563eb",
-    "accent_hover": "#1d4ed8",
+    "accent": "#7c3aed",
+    "accent_hover": "#6d28d9",
     "accent_fg": "#ffffff",
 }
 DARK = {
@@ -59,8 +75,8 @@ DARK = {
     "border": "#2e2e2e",
     "button": "#2a2a2a",
     "button_hover": "#333333",
-    "accent": "#3b82f6",
-    "accent_hover": "#2563eb",
+    "accent": "#a855f7",
+    "accent_hover": "#9333ea",
     "accent_fg": "#ffffff",
 }
 
@@ -143,10 +159,11 @@ def file_row(
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("MKV to MP4")
+        self.title(APP_NAME)
         self.minsize(920, 600)
         self.geometry("1080x740")
         self.option_add("*Font", FONT)
+        self._set_window_icon()
 
         self.ffmpeg = find_ffmpeg()
         cfg = load_config()
@@ -186,6 +203,22 @@ class App(tk.Tk):
 
         if self.watch_folder.get():
             self.refresh_file_list(initial=True)
+
+    def _set_window_icon(self) -> None:
+        png = asset_path("remuxr_logo.png")
+        ico = asset_path("remuxr.ico")
+        if png.is_file():
+            logo = tk.PhotoImage(file=str(png))
+            factor = max(1, logo.height() // 32)
+            if factor > 1:
+                logo = logo.subsample(factor, factor)
+            self._logo_window = logo
+            self.iconphoto(True, self._logo_window)
+        if ico.is_file():
+            try:
+                self.iconbitmap(str(ico))
+            except tk.TclError:
+                pass
 
     def _colors(self) -> dict[str, str]:
         return DARK if self.dark_mode.get() else LIGHT
@@ -261,11 +294,25 @@ class App(tk.Tk):
 
         header = self._frame(self)
         header.grid(row=0, column=0, sticky="ew", padx=20, pady=(16, 8))
-        title_row = self._frame(header)
-        title_row.pack(fill="x")
-        self._label(title_row, "Watch folder").pack(side="left")
+        brand = self._frame(header)
+        brand.pack(fill="x")
+        logo_file = asset_path("remuxr_logo.png")
+        if logo_file.is_file():
+            logo = tk.PhotoImage(file=str(logo_file))
+            factor = max(1, logo.height() // 64)
+            if factor > 1:
+                logo = logo.subsample(factor, factor)
+            self._logo_header = logo
+            self.logo_label = tk.Label(brand, image=logo, bd=0, highlightthickness=0)
+            self.logo_label.pack(side="left")
+            self.brand_name = self._label(brand, APP_NAME)
+            self.brand_name.configure(font=("Segoe UI", 16, "bold"))
+            self.brand_name.pack(side="left", padx=(12, 0))
+        else:
+            self.logo_label = self._label(brand, APP_NAME)
+            self.logo_label.pack(side="left")
         self.settings_btn = tk.Button(
-            title_row,
+            brand,
             image=self.icons.gear,
             command=self.open_settings,
             bd=0,
@@ -274,6 +321,10 @@ class App(tk.Tk):
             takefocus=0,
         )
         self.settings_btn.pack(side="right")
+
+        title_row = self._frame(header)
+        title_row.pack(fill="x", pady=(12, 0))
+        self._label(title_row, "Watch folder").pack(side="left")
 
         row = self._frame(header)
         row.pack(fill="x", pady=(6, 0))
@@ -499,6 +550,8 @@ class App(tk.Tk):
         self.configure(bg=colors["bg"])
         self.settings_btn.configure(image=self.icons.gear, bg=colors["bg"], activebackground=colors["button"])
         self.settings_btn.image = self.icons.gear
+        if hasattr(self, "logo_label") and self.logo_label.winfo_exists():
+            self.logo_label.configure(bg=colors["bg"])
         for frame in self._shell:
             if frame.winfo_exists():
                 frame.configure(bg=colors["bg"])
