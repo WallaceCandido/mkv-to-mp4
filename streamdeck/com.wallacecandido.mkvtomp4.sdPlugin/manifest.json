@@ -1,0 +1,77 @@
+{
+  "SDKVersion": 2,
+  "Author": "WallaceCandido",
+  "CodePath": "plugin.html",
+  "Description": "Start or stop MKV to MP4 folder watching from Stream Deck. The desktop app must be running on this computer.",
+  "Name": "MKV to MP4",
+  "Icon": "imgs/category",
+  "Category": "MKV to MP4",
+  "CategoryIcon": "imgs/category",
+  "URL": "https://github.com/WallaceCandido/mkv-to-mp4",
+  "Version": "1.0.0",
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Software": {
+    "MinimumVersion": "6.0"
+  },
+  "ApplicationsToMonitor": {
+    "windows": ["MKV to MP4.exe", "python.exe"]
+  },
+  "Actions": [
+    {
+      "Icon": "imgs/toggle",
+      "Name": "Toggle Watch",
+      "States": [
+        {
+          "Image": "imgs/idle",
+          "Title": "Idle",
+          "TitleAlignment": "bottom",
+          "FontSize": "11"
+        },
+        {
+          "Image": "imgs/watching",
+          "Title": "Watching",
+          "TitleAlignment": "bottom",
+          "FontSize": "11"
+        }
+      ],
+      "Tooltip": "Start or stop watching the folder",
+      "UUID": "com.wallacecandido.mkvtomp4.watch.toggle",
+      "SupportedInMultiActions": true
+    },
+    {
+      "Icon": "imgs/idle",
+      "Name": "Start Watch",
+      "States": [
+        {
+          "Image": "imgs/idle",
+          "Title": "Start",
+          "TitleAlignment": "bottom",
+          "FontSize": "11"
+        }
+      ],
+      "Tooltip": "Start watching the folder",
+      "UUID": "com.wallacecandido.mkvtomp4.watch.start",
+      "SupportedInMultiActions": true
+    },
+    {
+      "Icon": "imgs/watching",
+      "Name": "Stop Watch",
+      "States": [
+        {
+          "Image": "imgs/watching",
+          "Title": "Stop",
+          "TitleAlignment": "bottom",
+          "FontSize": "11"
+        }
+      ],
+      "Tooltip": "Stop watching the folder",
+      "UUID": "com.wallacecandido.mkvtomp4.watch.stop",
+      "SupportedInMultiActions": true
+    }
+  ]
+}

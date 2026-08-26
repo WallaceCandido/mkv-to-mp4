@@ -6,6 +6,7 @@ import base64
 import struct
 import zlib
 import tkinter as tk
+from pathlib import Path
 
 BLUE = (37, 99, 235, 255)
 WHITE = (255, 255, 255, 255)
@@ -193,6 +194,10 @@ def sort_mark(root: tk.Misc, *, state: str, size: int = 12) -> tk.PhotoImage:
         _stroke_polyline(pixels, top, MUTED, 1.5)
         _stroke_polyline(pixels, bottom, MUTED, 1.5)
     return _photo(root, pixels)
+
+
+def write_png(path: Path, pixels: list[list[tuple[int, int, int, int]]]) -> None:
+    Path(path).write_bytes(_png(len(pixels[0]), len(pixels), pixels))
 
 
 class IconSet:

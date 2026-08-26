@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from icons import IconSet
 from remux import find_ffmpeg, output_path_for, remux_mkv_to_mp4
+from streamdeck_api import DEFAULT_PORT, StreamDeckApi
 
 POLL_SECONDS = 2.0
 STABLE_CHECKS = 2
@@ -114,7 +115,10 @@ class App(tk.Tk):
         cfg = load_config()
         self.watch_folder = tk.StringVar(value=cfg.get("watch_folder", ""))
         self.output_folder = tk.StringVar(value=cfg.get("output_folder", ""))
-        self.same_output = tk.BooleanVar(value=cfg.get("same_output", True))
+        same = cfg.get("same_output", True)
+        if not str(cfg.get("output_folder", "")).strip():
+            same = True
+        self.same_output = tk.BooleanVar(value=same)
         self.recursive = tk.BooleanVar(value=False)
         self.watching = False
 
@@ -124,15 +128,22 @@ class App(tk.Tk):
         self.queued: set[str] = set()
         self.jobs: queue.Queue[tuple[str, Path, Path]] = queue.Queue()
         self.ui_events: queue.Queue[tuple] = queue.Queue()
+        self._api_jobs: queue.Queue[tuple] = queue.Queue()
         self.sort_column = "name"
         self.sort_reverse = False
         self.sort_keys: dict[str, dict[str, object]] = {}
         self.checked: set[str] = set()
+        self.deck_api = StreamDeckApi(self)
 
         self._build()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(200, self._drain_ui_events)
         self._refresh_ffmpeg_label()
+        self.deck_api.start()
+        if self.deck_api.running:
+            self.streamdeck_label.configure(text=f"Stream Deck: :{DEFAULT_PORT}")
+        else:
+            self.streamdeck_label.configure(text="Stream Deck: port busy")
 
         if self.watch_folder.get():
             self.refresh_file_list(initial=True)
@@ -200,6 +211,8 @@ class App(tk.Tk):
         ).pack(side="left", padx=(16, 0))
         self.ffmpeg_label = ttk.Label(controls, text="")
         self.ffmpeg_label.pack(side="right")
+        self.streamdeck_label = ttk.Label(controls, text="")
+        self.streamdeck_label.pack(side="right", padx=(0, 16))
 
         hint = ttk.Label(
             self,
@@ -281,11 +294,37 @@ class App(tk.Tk):
             return self.folder_path()
         raw = self.output_folder.get().strip()
         if not raw:
-            return None
+            return self.folder_path()
         return Path(raw)
 
     def dest_for(self, mkv_path: Path) -> Path:
         return output_path_for(mkv_path, self.output_dir_path(), self.folder_path())
+
+    def _can_write(self, folder: Path) -> bool:
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            probe = folder / ".mkv-to-mp4-write-test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+            return True
+        except OSError:
+            return False
+
+    def _writable_output_dir(self, watch_folder: Path) -> Path | None:
+        dest = self.output_dir_path() or watch_folder
+        if dest and self._can_write(dest):
+            return dest
+        for candidate in (
+            Path.home() / "Videos" / "MKV to MP4",
+            APP_DIR / "output",
+        ):
+            if self._can_write(candidate):
+                self.same_output.set(False)
+                self.output_folder.set(str(candidate))
+                self._sync_output_controls()
+                self.log_line(f"Cannot write to {dest}. Saving MP4s to {candidate}")
+                return candidate
+        return None
 
     def _refresh_headings(self) -> None:
         rows = self.tree.get_children("")
@@ -470,41 +509,67 @@ class App(tk.Tk):
         self._apply_sort()
         self._refresh_headings()
 
-    def start_watching(self) -> None:
+    def call_on_ui(self, fn) -> str | None:  # noqa: ANN001
+        box: dict[str, str | None] = {}
+        done = threading.Event()
+        self._api_jobs.put((fn, box, done))
+        if not done.wait(20):
+            return "The app did not respond."
+        return box.get("error")
+
+    def stream_deck_status(self) -> dict:
+        return {
+            "ok": True,
+            "watching": self.watching,
+            "folder": self.watch_folder.get().strip(),
+        }
+
+    def api_start_watching(self) -> str | None:
+        error = self.start_watching(interactive=False)
+        if error:
+            self.log_line(f"Stream Deck could not start watching: {error}")
+        else:
+            self.log_line("Stream Deck started watching.")
+        return error
+
+    def api_stop_watching(self) -> str | None:
+        if self.watching:
+            self.stop_watching()
+            self.log_line("Stream Deck stopped watching.")
+        return None
+
+    def api_toggle_watching(self) -> str | None:
+        if self.watching:
+            return self.api_stop_watching()
+        return self.api_start_watching()
+
+    def start_watching(self, interactive: bool = True) -> str | None:
+        if self.watching:
+            return None
         folder = self.folder_path()
         if not folder or not folder.is_dir():
-            messagebox.showerror("Folder needed", "Choose an existing folder to watch.")
-            return
+            msg = "Choose an existing folder to watch."
+            if interactive:
+                messagebox.showerror("Folder needed", msg)
+            return msg
         if not self.ffmpeg:
             self.ffmpeg = find_ffmpeg()
             self._refresh_ffmpeg_label()
         if not self.ffmpeg:
-            messagebox.showerror(
-                "FFmpeg not found",
-                "Install FFmpeg and make sure it is on your PATH, then try again.",
-            )
-            return
+            msg = "FFmpeg was not found."
+            if interactive:
+                messagebox.showerror(
+                    "FFmpeg not found",
+                    "Install FFmpeg and make sure it is on your PATH, then try again.",
+                )
+            return msg
 
-        out_dir = self.output_dir_path()
-        if not self.same_output.get() and (not out_dir or not out_dir.is_dir()):
-            messagebox.showerror(
-                "Output folder needed",
-                "Choose a folder to save MP4s, or check “Save next to the MKV”.",
-            )
-            return
-        try:
-            probe = (out_dir or folder) / ".mkv-to-mp4-write-test"
-            probe.write_text("ok", encoding="utf-8")
-            probe.unlink()
-        except OSError:
-            messagebox.showerror(
-                "Cannot write here",
-                "This Windows user can read the folder but cannot create files in it.\n\n"
-                "On the PC that shares the recordings, give your account Change/Modify "
-                "permission on the share, then reconnect the Z: drive.\n\n"
-                "Or uncheck “Save next to the MKV” and pick a local folder (for example Videos).",
-            )
-            return
+        out_dir = self._writable_output_dir(folder)
+        if out_dir is None:
+            msg = "Cannot write MP4s (share is read-only and no local folder worked)."
+            if interactive:
+                messagebox.showerror("Cannot write here", msg)
+            return msg
 
         self.persist_settings()
         existing = list_mkv_files(folder, self.recursive.get())
@@ -524,8 +589,11 @@ class App(tk.Tk):
             f"Found {len(existing)} existing .mkv file(s). They will not be remuxed unless you select them."
         )
         threading.Thread(target=self._watch_loop, daemon=True).start()
+        return None
 
     def stop_watching(self) -> None:
+        if not self.watching:
+            return
         self.watching = False
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
@@ -625,6 +693,16 @@ class App(tk.Tk):
     def _drain_ui_events(self) -> None:
         while True:
             try:
+                fn, box, done = self._api_jobs.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                box["error"] = fn()
+            except Exception as exc:  # noqa: BLE001
+                box["error"] = str(exc)
+            done.set()
+        while True:
+            try:
                 event = self.ui_events.get_nowait()
             except queue.Empty:
                 break
@@ -655,6 +733,8 @@ class App(tk.Tk):
     def on_close(self) -> None:
         self.watching = False
         self.persist_settings()
+        if self.deck_api:
+            self.deck_api.stop()
         self.destroy()
 
 
