@@ -39,7 +39,9 @@ def load_config() -> dict:
 
 def save_config(data: dict) -> None:
     APP_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    merged = load_config()
+    merged.update(data)
+    CONFIG_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
 
 
 def list_mkv_files(folder: Path, recursive: bool) -> list[Path]:
@@ -109,7 +111,10 @@ class App(tk.Tk):
         self.geometry("1020x620")
 
         self.ffmpeg = find_ffmpeg()
-        self.watch_folder = tk.StringVar(value=load_config().get("watch_folder", ""))
+        cfg = load_config()
+        self.watch_folder = tk.StringVar(value=cfg.get("watch_folder", ""))
+        self.output_folder = tk.StringVar(value=cfg.get("output_folder", ""))
+        self.same_output = tk.BooleanVar(value=cfg.get("same_output", True))
         self.recursive = tk.BooleanVar(value=False)
         self.watching = False
 
@@ -117,7 +122,7 @@ class App(tk.Tk):
         self.file_status: dict[str, str] = {}
         self.size_history: dict[str, list[int]] = {}
         self.queued: set[str] = set()
-        self.jobs: queue.Queue[tuple[str, Path]] = queue.Queue()
+        self.jobs: queue.Queue[tuple[str, Path, Path]] = queue.Queue()
         self.ui_events: queue.Queue[tuple] = queue.Queue()
         self.sort_column = "name"
         self.sort_reverse = False
@@ -167,6 +172,20 @@ class App(tk.Tk):
         ttk.Entry(row, textvariable=self.watch_folder).pack(side="left", fill="x", expand=True)
         ttk.Button(row, text="Browse…", command=self.browse_folder).pack(side="left", padx=(8, 0))
 
+        ttk.Label(header, text="Save MP4s to").pack(anchor="w", pady=(8, 0))
+        out_row = ttk.Frame(header)
+        out_row.pack(fill="x", pady=(4, 0))
+        self.output_entry = ttk.Entry(out_row, textvariable=self.output_folder)
+        self.output_entry.pack(side="left", fill="x", expand=True)
+        self.output_browse = ttk.Button(out_row, text="Browse…", command=self.browse_output_folder)
+        self.output_browse.pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(
+            header,
+            text="Save next to the MKV (same folder)",
+            variable=self.same_output,
+            command=self._sync_output_controls,
+        ).pack(anchor="w", pady=(4, 0))
+
         controls = ttk.Frame(self)
         controls.pack(fill="x", **pad)
         self.start_btn = ttk.Button(controls, text="Start watching", command=self.start_watching)
@@ -185,7 +204,8 @@ class App(tk.Tk):
         hint = ttk.Label(
             self,
             text="Existing .mkv files are listed but never remuxed automatically. "
-            "Only files that appear after you start watching are remuxed on their own.",
+            "Only files that appear after you start watching are remuxed on their own. "
+            "If a shared folder is read-only, save MP4s to a local folder instead.",
             wraplength=860,
         )
         hint.pack(fill="x", padx=12)
@@ -239,6 +259,33 @@ class App(tk.Tk):
         self.log.pack(fill="x", padx=12, pady=(0, 12))
 
         threading.Thread(target=self._worker_loop, daemon=True).start()
+        self._sync_output_controls()
+
+    def persist_settings(self) -> None:
+        save_config(
+            {
+                "watch_folder": self.watch_folder.get().strip(),
+                "output_folder": self.output_folder.get().strip(),
+                "same_output": self.same_output.get(),
+            }
+        )
+
+    def _sync_output_controls(self) -> None:
+        state = "disabled" if self.same_output.get() else "normal"
+        self.output_entry.configure(state=state)
+        self.output_browse.configure(state=state)
+        self.persist_settings()
+
+    def output_dir_path(self) -> Path | None:
+        if self.same_output.get():
+            return self.folder_path()
+        raw = self.output_folder.get().strip()
+        if not raw:
+            return None
+        return Path(raw)
+
+    def dest_for(self, mkv_path: Path) -> Path:
+        return output_path_for(mkv_path, self.output_dir_path(), self.folder_path())
 
     def _refresh_headings(self) -> None:
         rows = self.tree.get_children("")
@@ -380,10 +427,18 @@ class App(tk.Tk):
         if not chosen:
             return
         self.watch_folder.set(chosen)
-        save_config({"watch_folder": chosen})
+        self.persist_settings()
         if self.watching:
             self.stop_watching()
         self.refresh_file_list(initial=True)
+
+    def browse_output_folder(self) -> None:
+        initial = self.output_folder.get() or self.watch_folder.get() or str(Path.home())
+        chosen = filedialog.askdirectory(title="Choose a folder for MP4 files", initialdir=initial)
+        if not chosen:
+            return
+        self.output_folder.set(chosen)
+        self.persist_settings()
 
     def on_recursive_toggle(self) -> None:
         if self.watching:
@@ -409,7 +464,7 @@ class App(tk.Tk):
             elif key not in self.file_status:
                 self.file_status[key] = STATUS_DETECTED if self.watching else STATUS_EXISTING
             status = self.file_status.get(key, STATUS_EXISTING)
-            if status == STATUS_EXISTING and output_path_for(path).is_file():
+            if status == STATUS_EXISTING and self.dest_for(path).is_file():
                 status = f"{STATUS_EXISTING} · {STATUS_SKIPPED}"
             self._put_row(path, status, apply_sort=False)
         self._apply_sort()
@@ -430,7 +485,28 @@ class App(tk.Tk):
             )
             return
 
-        save_config({"watch_folder": str(folder)})
+        out_dir = self.output_dir_path()
+        if not self.same_output.get() and (not out_dir or not out_dir.is_dir()):
+            messagebox.showerror(
+                "Output folder needed",
+                "Choose a folder to save MP4s, or check “Save next to the MKV”.",
+            )
+            return
+        try:
+            probe = (out_dir or folder) / ".mkv-to-mp4-write-test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+        except OSError:
+            messagebox.showerror(
+                "Cannot write here",
+                "This Windows user can read the folder but cannot create files in it.\n\n"
+                "On the PC that shares the recordings, give your account Change/Modify "
+                "permission on the share, then reconnect the Z: drive.\n\n"
+                "Or uncheck “Save next to the MKV” and pick a local folder (for example Videos).",
+            )
+            return
+
+        self.persist_settings()
         existing = list_mkv_files(folder, self.recursive.get())
         self.baseline = {str(p) for p in existing}
         self.file_status = {str(p): STATUS_EXISTING for p in existing}
@@ -441,6 +517,9 @@ class App(tk.Tk):
         self.stop_btn.configure(state="normal")
         self.refresh_file_list()
         self.log_line(f"Watching {folder}")
+        dest = self.output_dir_path()
+        if dest and dest != folder:
+            self.log_line(f"Saving MP4s to {dest}")
         self.log_line(
             f"Found {len(existing)} existing .mkv file(s). They will not be remuxed unless you select them."
         )
@@ -453,9 +532,9 @@ class App(tk.Tk):
         self.log_line("Stopped watching.")
 
     def open_folder(self) -> None:
-        folder = self.folder_path()
-        if folder and folder.is_dir():
-            os.startfile(folder)  # type: ignore[attr-defined]
+        target = self.output_dir_path() or self.folder_path()
+        if target and target.is_dir():
+            os.startfile(target)  # type: ignore[attr-defined]
         else:
             messagebox.showerror("Folder needed", "Choose a folder first.")
 
@@ -486,7 +565,7 @@ class App(tk.Tk):
         self.queued.add(key)
         self.file_status[key] = STATUS_REMUXING
         self._set_row_status(path, STATUS_REMUXING)
-        self.jobs.put((reason, path))
+        self.jobs.put((reason, path, self.dest_for(path)))
         self.log_line(f"Queued ({reason}): {path.name}")
 
     def _set_row_status(self, path: Path, status: str) -> None:
@@ -524,7 +603,7 @@ class App(tk.Tk):
                         self.file_status[key] = STATUS_DETECTED
                         self.ui_events.put(("upsert", path, STATUS_DETECTED))
                         continue
-                    if output_path_for(path).is_file():
+                    if self.dest_for(path).is_file():
                         self.file_status[key] = STATUS_SKIPPED
                         self.ui_events.put(("upsert", path, STATUS_SKIPPED))
                         self.ui_events.put(("log", f"Skipped (MP4 exists): {path.name}"))
@@ -534,10 +613,10 @@ class App(tk.Tk):
 
     def _worker_loop(self) -> None:
         while True:
-            reason, path = self.jobs.get()
+            reason, path, dest = self.jobs.get()
             try:
-                remux_mkv_to_mp4(path, self.ffmpeg)  # type: ignore[arg-type]
-                self.ui_events.put(("done", path, reason))
+                remux_mkv_to_mp4(path, self.ffmpeg, dest)
+                self.ui_events.put(("done", path, reason, dest))
             except Exception as exc:  # noqa: BLE001 — show any remux failure in the UI
                 self.ui_events.put(("failed", path, str(exc)))
             finally:
@@ -558,13 +637,12 @@ class App(tk.Tk):
             elif kind == "enqueue_auto":
                 self._enqueue(event[1], reason="new file")
             elif kind == "done":
-                path, reason = event[1], event[2]
+                path, reason, dest = event[1], event[2], event[3]
                 key = str(path)
                 self.queued.discard(key)
                 self.file_status[key] = STATUS_DONE
                 self._set_row_status(path, STATUS_DONE)
-                out = output_path_for(path)
-                self.log_line(f"Finished ({reason}): {out.name}")
+                self.log_line(f"Finished ({reason}): {dest}")
             elif kind == "failed":
                 path, err = event[1], event[2]
                 key = str(path)
@@ -576,9 +654,7 @@ class App(tk.Tk):
 
     def on_close(self) -> None:
         self.watching = False
-        folder = self.watch_folder.get().strip()
-        if folder:
-            save_config({"watch_folder": folder})
+        self.persist_settings()
         self.destroy()
 
 
