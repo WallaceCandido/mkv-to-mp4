@@ -57,8 +57,11 @@ def format_size(num: int) -> str:
     return f"{num:.1f} TB"
 
 
-LIST_COLUMNS = ("name", "status", "size", "date")
-COLUMN_TITLES = {"name": "File", "status": "Status", "size": "Size", "date": "Date"}
+CHECKED = "☑"
+UNCHECKED = "☐"
+
+LIST_COLUMNS = ("picked", "name", "status", "size", "date")
+COLUMN_TITLES = {"picked": "", "name": "File", "status": "Status", "size": "Size", "date": "Date"}
 
 
 def display_name(path: Path, folder: Path | None) -> str:
@@ -121,6 +124,7 @@ class App(tk.Tk):
         self.sort_column = "name"
         self.sort_reverse = False
         self.sort_keys: dict[str, dict[str, object]] = {}
+        self.checked: set[str] = set()
 
         self._build()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -173,16 +177,19 @@ class App(tk.Tk):
             tree_frame,
             columns=(*LIST_COLUMNS, "spacer"),
             show="headings",
-            selectmode="extended",
+            selectmode="none",
         )
         self.tree.column("#0", width=0, minwidth=0, stretch=False)
+        self.tree.column("picked", width=36, minwidth=36, stretch=False, anchor="center")
         self.tree.column("name", width=280, minwidth=120, stretch=True)
         self.tree.column("status", width=280, minwidth=160, stretch=False)
         self.tree.column("size", width=90, minwidth=70, stretch=False, anchor="e")
         self.tree.column("date", width=140, minwidth=120, stretch=False)
         self.tree.heading("spacer", text="")
         self.tree.column("spacer", width=0, minwidth=0, stretch=True)
+        self.tree.tag_configure("checked", background="#e8f0fe")
         self._refresh_headings()
+        self.tree.bind("<Button-1>", self._on_tree_click)
         yscroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         xscroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
@@ -193,6 +200,12 @@ class App(tk.Tk):
         actions = ttk.Frame(self)
         actions.pack(fill="x", **pad)
         ttk.Button(actions, text="Remux selected", command=self.remux_selected).pack(side="left")
+        ttk.Button(actions, text="Select all", command=lambda: self._set_all_checked(True)).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Button(actions, text="Clear", command=lambda: self._set_all_checked(False)).pack(
+            side="left", padx=(8, 0)
+        )
         ttk.Button(actions, text="Refresh list", command=lambda: self.refresh_file_list()).pack(
             side="left", padx=(8, 0)
         )
@@ -205,11 +218,66 @@ class App(tk.Tk):
         threading.Thread(target=self._worker_loop, daemon=True).start()
 
     def _refresh_headings(self) -> None:
+        rows = self.tree.get_children("")
+        all_on = bool(rows) and all(iid in self.checked for iid in rows)
+        self.tree.heading(
+            "picked",
+            text=CHECKED if all_on else UNCHECKED,
+            command=self._toggle_select_all,
+        )
         for column in LIST_COLUMNS:
+            if column == "picked":
+                continue
             title = COLUMN_TITLES[column]
             if column == self.sort_column:
                 title = f"{title} {'▼' if self.sort_reverse else '▲'}"
             self.tree.heading(column, text=title, command=lambda c=column: self.sort_by(c))
+
+    def _on_tree_click(self, event: tk.Event) -> str | None:
+        region = self.tree.identify_region(event.x, event.y)
+        if region == "heading":
+            if self.tree.identify_column(event.x) == "#1":
+                self._toggle_select_all()
+                return "break"
+            return None
+        row = self.tree.identify_row(event.y)
+        if not row:
+            return None
+        self._toggle_check(row)
+        return "break"
+
+    def _toggle_check(self, iid: str) -> None:
+        self._set_checked(iid, iid not in self.checked)
+
+    def _toggle_select_all(self) -> None:
+        rows = self.tree.get_children("")
+        if not rows:
+            return
+        self._set_all_checked(not all(iid in self.checked for iid in rows))
+
+    def _set_all_checked(self, on: bool) -> None:
+        for iid in self.tree.get_children(""):
+            self._set_checked(iid, on, refresh_heading=False)
+        self._refresh_headings()
+        if self.sort_column == "picked":
+            self._apply_sort()
+
+    def _set_checked(self, iid: str, on: bool, *, refresh_heading: bool = True) -> None:
+        if on:
+            self.checked.add(iid)
+        else:
+            self.checked.discard(iid)
+        if self.tree.exists(iid):
+            values = list(self.tree.item(iid, "values"))
+            if values:
+                values[0] = CHECKED if on else UNCHECKED
+                self.tree.item(iid, values=values, tags=("checked",) if on else ())
+            if iid in self.sort_keys:
+                self.sort_keys[iid]["picked"] = 1 if on else 0
+        if refresh_heading:
+            self._refresh_headings()
+            if self.sort_column == "picked":
+                self._apply_sort()
 
     def sort_by(self, column: str) -> None:
         if self.sort_column == column:
@@ -232,11 +300,15 @@ class App(tk.Tk):
     def _put_row(self, path: Path, status: str, *, apply_sort: bool = True) -> None:
         key = str(path)
         values, keys = file_row(path, self.folder_path(), status)
+        picked = key in self.checked
+        display = (CHECKED if picked else UNCHECKED, *values)
+        keys = {"picked": 1 if picked else 0, **keys}
         self.sort_keys[key] = keys
+        tags = ("checked",) if picked else ()
         if self.tree.exists(key):
-            self.tree.item(key, values=values)
+            self.tree.item(key, values=display, tags=tags)
         else:
-            self.tree.insert("", "end", iid=key, values=values)
+            self.tree.insert("", "end", iid=key, values=display, tags=tags)
         if apply_sort:
             self._apply_sort()
 
@@ -280,8 +352,12 @@ class App(tk.Tk):
         self.tree.delete(*self.tree.get_children())
         self.sort_keys.clear()
         if not folder or not folder.is_dir():
+            self.checked.clear()
+            self._refresh_headings()
             return
         files = list_mkv_files(folder, self.recursive.get())
+        present = {str(path) for path in files}
+        self.checked &= present
         for path in files:
             key = str(path)
             if initial:
@@ -293,6 +369,7 @@ class App(tk.Tk):
                 status = f"{STATUS_EXISTING} · {STATUS_SKIPPED}"
             self._put_row(path, status, apply_sort=False)
         self._apply_sort()
+        self._refresh_headings()
 
     def start_watching(self) -> None:
         folder = self.folder_path()
@@ -339,12 +416,15 @@ class App(tk.Tk):
             messagebox.showerror("Folder needed", "Choose a folder first.")
 
     def selected_paths(self) -> list[Path]:
-        return [Path(iid) for iid in self.tree.selection()]
+        return [Path(iid) for iid in self.tree.get_children("") if iid in self.checked]
 
     def remux_selected(self) -> None:
         paths = self.selected_paths()
         if not paths:
-            messagebox.showinfo("Nothing selected", "Select one or more .mkv files in the list.")
+            messagebox.showinfo(
+                "Nothing selected",
+                "Click the boxes on the left to choose one or more .mkv files.",
+            )
             return
         if not self.ffmpeg:
             self.ffmpeg = find_ffmpeg()
