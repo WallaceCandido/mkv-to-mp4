@@ -24,6 +24,8 @@ python app.py
 
 Or double-click `run.bat`.
 
+The gear in the top-right opens **Settings**. You can hide or show the log, turn the Stream Deck connection off, and switch dark mode. Those choices are remembered the next time you open the app.
+
 ## Windows executable
 
 From this folder:
@@ -43,7 +45,7 @@ You can start and stop folder watching from an Elgato Stream Deck. The **MKV to 
 - Stream Deck software installed
 - This app running (`python app.py` or the `.exe`)
 - A watch folder already chosen in the app
-- The window should show **Stream Deck: :17321** (if it says **port busy**, close extra copies of the app)
+- The window should show **Stream Deck: :17321** (if it says **port busy**, close extra copies of the app). If the label says **Stream Deck: off**, turn the connection back on in Settings.
 
 ### Install the plugin (from source)
 
