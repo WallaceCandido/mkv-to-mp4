@@ -36,6 +36,8 @@ python build_exe.py
 
 That creates a single file: `dist\Remuxr.exe`. You can copy just that file. FFmpeg is packed inside it; Windows unpacks it to a temp folder when the app starts, so the first launch is a bit slower.
 
+You can also download the latest build from [Releases](https://github.com/WallaceCandido/Remuxr/releases).
+
 ## Stream Deck
 
 You can start and stop folder watching from an Elgato Stream Deck. The **Remuxr app** and **Stream Deck software** must run on the **same Windows PC**.
