@@ -294,26 +294,12 @@ class App(tk.Tk):
 
         header = self._frame(self)
         header.grid(row=0, column=0, sticky="ew", padx=20, pady=(16, 8))
-        brand = self._frame(header)
-        brand.pack(fill="x")
-        logo_file = asset_path("remuxr_logo.png")
-        if logo_file.is_file():
-            logo = tk.PhotoImage(file=str(logo_file))
-            factor = max(1, logo.height() // 64)
-            if factor > 1:
-                logo = logo.subsample(factor, factor)
-            self._logo_header = logo
-            self.logo_label = tk.Label(brand, image=logo, bd=0, highlightthickness=0)
-            self.logo_label.pack(side="left")
-            self.brand_name = self._label(brand, APP_NAME)
-            self.brand_name.configure(font=("Segoe UI", 16, "bold"))
-            self.brand_name.pack(side="left", padx=(12, 0))
-        else:
-            self.logo_label = self._label(brand, APP_NAME)
-            self.logo_label.pack(side="left")
+        title_row = self._frame(header)
+        title_row.pack(fill="x")
+        self._label(title_row, "Watch folder").pack(side="left")
         self.settings_btn = tk.Button(
-            brand,
-            image=self.icons.gear,
+            title_row,
+            image=self.icons.menu,
             command=self.open_settings,
             bd=0,
             highlightthickness=0,
@@ -321,10 +307,6 @@ class App(tk.Tk):
             takefocus=0,
         )
         self.settings_btn.pack(side="right")
-
-        title_row = self._frame(header)
-        title_row.pack(fill="x", pady=(12, 0))
-        self._label(title_row, "Watch folder").pack(side="left")
 
         row = self._frame(header)
         row.pack(fill="x", pady=(6, 0))
@@ -548,10 +530,8 @@ class App(tk.Tk):
         colors = self._colors()
         self.icons = IconSet(self, dark=self.dark_mode.get())
         self.configure(bg=colors["bg"])
-        self.settings_btn.configure(image=self.icons.gear, bg=colors["bg"], activebackground=colors["button"])
-        self.settings_btn.image = self.icons.gear
-        if hasattr(self, "logo_label") and self.logo_label.winfo_exists():
-            self.logo_label.configure(bg=colors["bg"])
+        self.settings_btn.configure(image=self.icons.menu, bg=colors["bg"], activebackground=colors["button"])
+        self.settings_btn.image = self.icons.menu
         for frame in self._shell:
             if frame.winfo_exists():
                 frame.configure(bg=colors["bg"])

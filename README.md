@@ -24,7 +24,7 @@ python app.py
 
 Or double-click `run.bat`.
 
-The gear in the top-right opens **Settings**. You can hide or show the log, turn the Stream Deck connection off, and switch dark mode. Those choices are remembered the next time you open the app.
+The three-dot menu in the top-right opens **Settings**. You can hide or show the log, turn the Stream Deck connection off, and switch dark mode. Those choices are remembered the next time you open the app.
 
 ## Windows executable
 
@@ -36,7 +36,7 @@ python build_exe.py
 
 That creates a single file: `dist\Remuxr.exe`. You can copy just that file. FFmpeg is packed inside it; Windows unpacks it to a temp folder when the app starts, so the first launch is a bit slower.
 
-You can also download the latest build from [Releases](https://github.com/WallaceCandido/Remuxr/releases).
+You can also download **Remuxr.zip** from [Releases](https://github.com/WallaceCandido/Remuxr/releases). It includes the app, the Stream Deck installer, and a README.
 
 ## Stream Deck
 
@@ -49,9 +49,11 @@ You can start and stop folder watching from an Elgato Stream Deck. The **Remuxr 
 - A watch folder already chosen in the app
 - The window should show **Stream Deck: :17321** (if it says **port busy**, close extra copies of the app). If the label says **Stream Deck: off**, turn the connection back on in Settings.
 
-### Install the plugin (from source)
+### Install the plugin
 
-In the project folder:
+Download **Remuxr-StreamDeck.exe** from [Releases](https://github.com/WallaceCandido/Remuxr/releases) and double-click it. Fully quit Stream Deck (system tray → **Quit**), then open it again.
+
+From source instead:
 
 ```powershell
 python generate_streamdeck_icons.py
@@ -82,11 +84,7 @@ If the watch folder is not writable (common on a network share), the app saves M
 
 ### Another PC
 
-Copy the plugin pack (created by `install_streamdeck_plugin.py`):
-
-`dist\Remuxr.streamDeckPlugin`
-
-Double-click it on the other PC, restart Stream Deck, and run Remuxr there. The Stream Deck must be attached to that same computer.
+Copy **Remuxr-StreamDeck.exe** (or `dist\Remuxr.streamDeckPlugin`) to the other PC. Double-click it, restart Stream Deck, and run Remuxr there. The Stream Deck must be attached to that same computer.
 
 ### Troubleshooting
 
