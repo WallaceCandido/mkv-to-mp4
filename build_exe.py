@@ -129,9 +129,79 @@ def _refresh_windows_icons() -> None:
         subprocess.run([str(ie4), "-show"], check=False, capture_output=True)
 
 
+def build_streamdeck_installer(icon: Path | None) -> Path:
+    subprocess.run([sys.executable, str(ROOT / "generate_streamdeck_icons.py")], check=True)
+    plugin_dir = ROOT / "streamdeck"
+    packed = ROOT / "dist" / "Remuxr.streamDeckPlugin"
+    from install_streamdeck_plugin import PLUGIN_ID, pack_release
+
+    pack_release(packed, plugin_dir / PLUGIN_ID)
+    print(f"Packed: {packed}", flush=True)
+
+    subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller"], check=True)
+    sep = ";" if os.name == "nt" else ":"
+    add_plugin = f"{plugin_dir}{sep}streamdeck"
+    name = "Remuxr-StreamDeck"
+    cmd = [
+        sys.executable,
+        "-m",
+        "PyInstaller",
+        "--noconfirm",
+        "--clean",
+        "--windowed",
+        "--onefile",
+        "--name",
+        name,
+        "--add-data",
+        add_plugin,
+        str(ROOT / "install_streamdeck_plugin.py"),
+    ]
+    if icon and icon.is_file():
+        cmd.extend(["--icon", str(icon)])
+    print(" ".join(cmd), flush=True)
+    subprocess.run(cmd, check=True, cwd=ROOT)
+    exe = ROOT / "dist" / f"{name}.exe"
+    print(f"Built: {exe}", flush=True)
+    return exe
+
+
+def pack_release_zip() -> Path:
+    dist = ROOT / "dist"
+    readme = ROOT / "release" / "README.txt"
+    zip_path = dist / "Remuxr.zip"
+    files = [
+        (dist / "Remuxr.exe", "Remuxr.exe"),
+        (dist / "Remuxr-StreamDeck.exe", "Remuxr-StreamDeck.exe"),
+        (readme, "README.txt"),
+    ]
+    missing = [str(src) for src, _ in files if not src.is_file()]
+    if missing:
+        raise FileNotFoundError("Missing files for Remuxr.zip:\n  " + "\n  ".join(missing))
+    dist.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for src, name in files:
+            if name == "README.txt":
+                text = src.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\n", "\r\n")
+                zf.writestr(name, text.encode("utf-8"))
+            else:
+                zf.write(src, name)
+    print(f"Packed: {zip_path}", flush=True)
+    return zip_path
+
+
 def main() -> None:
-    ffmpeg_dir = ensure_ffmpeg()
+    args = set(sys.argv[1:])
+    if "--zip-only" in args:
+        pack_release_zip()
+        return
+    streamdeck_only = "--streamdeck-only" in args
     icon = make_app_icon()
+    if streamdeck_only:
+        build_streamdeck_installer(icon)
+        pack_release_zip()
+        _refresh_windows_icons()
+        return
+    ffmpeg_dir = ensure_ffmpeg()
     subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller"], check=True)
     sep = ";" if os.name == "nt" else ":"
     add_binary = f"{ffmpeg_dir}{sep}ffmpeg"
@@ -167,6 +237,8 @@ def main() -> None:
         except OSError:
             print(f"Could not replace {exe}; left a copy at {fresh}", flush=True)
             exe = fresh
+    build_streamdeck_installer(icon)
+    pack_release_zip()
     _refresh_windows_icons()
     print(f"Built: {exe}", flush=True)
 
